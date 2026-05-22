@@ -9,16 +9,48 @@ explain, check, quiz, exam — and tracks your progress.
 
 ## Install
 
+This course is a Claude Code plugin, distributed through this repository. Install it
+from inside Claude Code with two commands:
+
 ```
-/plugin marketplace add <path-or-git-url-to-this-repo>
+/plugin marketplace add BenKurrek/applied-ai-engineering-course
 /plugin install ai-course@kurrek-courses
-/reload-plugins
 ```
 
-Or, for a single session without installing:
+The first command registers this repo as a plugin **marketplace**; the second installs
+the **`ai-course`** plugin from it. Registering the marketplace is a one-time step —
+after that, updates and re-installs are just `/plugin install`. If `/ai-course:learn`
+is not available immediately after installing, run `/reload-plugins` or restart
+Claude Code.
+
+> Plugins run in **Claude Code** (the CLI, desktop app, and IDE extensions) — not in
+> the claude.ai web chat.
+
+### One-command install (optional)
+
+To skip the `marketplace add` step, pre-register the marketplace in a project's
+`.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "kurrek-courses": {
+      "source": { "source": "github", "repo": "BenKurrek/applied-ai-engineering-course" }
+    }
+  }
+}
+```
+
+Installation is then a single `/plugin install ai-course@kurrek-courses`. Add
+`"enabledPlugins": { "ai-course@kurrek-courses": true }` alongside it and the plugin
+loads automatically with no commands at all — handy for a classroom or team.
+
+### Run without installing
+
+For a one-off session, point Claude Code at a local clone:
 
 ```
-claude --plugin-dir <path-to-this-repo>
+claude --plugin-dir <path-to-your-clone>
 ```
 
 ## Use
