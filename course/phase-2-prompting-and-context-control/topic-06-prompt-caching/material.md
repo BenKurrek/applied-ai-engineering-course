@@ -66,6 +66,17 @@ and Google use **automatic / implicit** caching: the provider detects repeated p
 with no code change at all.[2] Either way the underlying mechanism is the same — reuse
 of the prefix KV cache.
 
+The three major providers compared:
+
+| Dimension       | Anthropic (Claude)                                | OpenAI                                            | Google (Gemini)                                  |
+|-----------------|---------------------------------------------------|---------------------------------------------------|---------------------------------------------------|
+| Opt-in model    | Explicit `cache_control` (or system-managed auto mode) | Automatic / implicit — no code change         | Implicit (auto, 2.5+) + explicit cache objects    |
+| Breakpoints     | Up to 4 explicit breakpoints; 20-block lookback   | None — provider finds the longest matching prefix | None for implicit; you create the object for explicit |
+| TTL             | 5-min default, opt-in 1-hour                      | Not configurable; ~5–10 min idle, ~1 hr max       | Implicit auto; explicit: developer-set TTL        |
+| Min length      | Model-specific (e.g. 1,024 Sonnet 4.6 / 4,096 Opus 4.7) | 1,024 tokens, matched in 128-token steps    | Model-specific                                    |
+| Write penalty   | 1.25× (5-min) / 2× (1-hour) base input            | None — no separate write charge                   | None for implicit; storage fee for explicit       |
+| Read discount   | 0.1× base (90% off)                               | 0.1× base on current flagships (was 50% on GPT-4o era) | ~0.1× base (90% off) for 2.5+, plus storage fee |
+
 ### Key terms
 
 - **KV cache** — stored key/value attention vectors for tokens already processed, so
@@ -105,6 +116,24 @@ descriptions) on every request, followed by a short user question.
   reuses the K/V vectors, and only prefills the short, new user question. The 4,000-token
   prefill — the bulk of the input cost and a chunk of the latency — is paid once, not
   thousands of times.
+
+Seen as a pipeline, a cache hit skips the prefix's prefill — TTFT shrinks, decode is
+untouched:
+
+```
+  MISS (cold)  │■■■■■■■■■■■■■■■■■■■■■■■■│▓▓│░░░░░░░░░░░░░░░░░░░│
+               │   prefill prefix      │tail│      decode      │
+               └──────── TTFT ───────────┘    └──── streaming ──┘
+
+  HIT (warm)   │·· loaded from cache ··│▓▓│░░░░░░░░░░░░░░░░░░░│
+               │  (prefill skipped)    │tail│      decode      │
+               └─ TTFT ─┘              ↑    └──── streaming ──┘
+                                       │
+                  TTFT bracket shrinks ┘   decode bracket UNCHANGED
+```
+
+Only the upfront wait (TTFT) gets shorter; once tokens start streaming, decode speed
+is identical on a hit and a miss.
 
 ### Check questions
 
@@ -222,6 +251,24 @@ Request B: "You are a support agent. Today is 2026-05-21. Follow the policy belo
 
 The prefix matches up to `Today is 2026-05-2`, then diverges at `0` vs `1`. Every token
 from there on — the entire multi-thousand-token policy — is a cache miss on request B.
+
+Aligning the two token streams at token 0 shows exactly where the cache stops being
+reusable — at the first differing token, everything after flips from hit to recomputed:
+
+```
+  token #:   0   1   2   ...        k-1 │ k │ k+1  k+2  ...        end
+            ┌───────────────────────────┼───┼───────────────────────┐
+  Request A │You are a support agent... 2│ 0 │ Follow the policy ... │
+  Request B │You are a support agent... 2│ 1 │ Follow the policy ... │
+            └───────────────────────────┴─▲─┴───────────────────────┘
+            └──── identical prefix ──────┘ │ └──── identical TEXT, but ┘
+            ▒▒▒▒▒▒▒ CACHE HIT ▒▒▒▒▒▒▒▒▒▒▒▒ │ ████ RECOMPUTED — miss ████
+                  (K/V reused)        first differing
+                                      token at position k
+
+  The tail is byte-identical text — yet still a miss, because every tail
+  token's K/V attends back through the changed token k.
+```
 
 Fix: move the volatile token out of the prefix. Put the date *after* the cached static
 content, near the user turn:
@@ -361,6 +408,37 @@ User question: "How do I export a report?"   <-- variable tail, prefilled fresh
 Now ~6,000+ tokens hit the cache on every call after the first; only the ~10-token
 question is prefilled new.
 
+The full cache-optimal layout, stable segments stacked into a cached prefix with
+breakpoint markers, and the variable query left as an uncached tail:
+
+```
+   ┌────────────────────────────────────┐ ┐
+   │  tool definitions                  │ │
+   │ ─────────────────────── ◄breakpoint│ │
+   │  system prompt (role, rules)       │ │
+   │ ─────────────────────── ◄breakpoint│ ├─► CACHED PREFIX
+   │  large static docs / knowledge base│ │   (byte-stable, written
+   │ ─────────────────────── ◄breakpoint│ │    once, read cheaply)
+   │  few-shot examples                 │ │
+   │  conversation history (turns 1..n) │ │
+   │ ─────────────────────── ◄breakpoint│ │
+   ├────────────────────────────────────┤ ┘
+   │  current user query                │ ──► UNCACHED TAIL
+   │  + any per-request volatile data    │     (prefilled fresh
+   └────────────────────────────────────┘      every call)
+
+   most stable at the top → least stable at the bottom.
+   Each ◄breakpoint lets a different-length stable prefix be reused.
+```
+
+The single most common mistake is placing a volatile value (a date, ID, timestamp) in
+the static region. Compare placing "today's date" at the top versus the tail:
+
+| Placement                         | Prompt sketch                                              | Caching outcome                                            |
+|------------------------------------|------------------------------------------------------------|-------------------------------------------------------------|
+| Date at top (cache busted)         | `Today is 2026-05-22.` → system prompt → 6k-token manual   | Date changes daily → prefix diverges at line 1 → the whole manual is re-written every day; caching does nothing |
+| Date at tail (cache preserved)     | system prompt → 6k-token manual → `Today is 2026-05-22.` → user query | Static region is byte-identical every call → manual caches; only the short volatile tail is uncached |
+
 ### Check questions
 
 1. An app's prompt contains, in this order: the user's question, a fixed 5,000-token
@@ -479,6 +557,45 @@ A bot has a 5,000-token cached system prefix on Anthropic's 5-minute tier.
   keeps it warm across the gaps — at a 2× write price, paid only when a write actually
   happens. Whether that's worth it is the pricing math of 6.5/6.6.
 
+On a time axis, each hit slides the TTL window forward; the entry only dies when an
+*idle gap* outlasts the window:
+
+```
+  time ──────────────────────────────────────────────────────────────►
+        hit     hit       hit                          (idle 12 min)        hit
+         ▼       ▼         ▼                                                 ▼
+   ──────●───────●─────────●──────────────────────────────────────────────── ●──
+         │       │         │                                                 │
+   write │ TTL window slides forward on every hit                            │
+         └─[═══════5min═══════]                                              │
+                 └─[═══════5min═══════]                                      │
+                           └─[═══════5min═══════]                            │
+                                       └─[══5min══] ✗ idle gap > 5 min       │
+                                                    └─► EVICTED               │
+                                                          next request = MISS ┘
+                                                          (full prefill + fresh write)
+```
+
+While hits keep arriving inside the window the prefix stays warm on a single write;
+the one idle gap that crosses the window edge evicts it.
+
+*Minimum-cacheable-length case.* The same ~3,000-token system prefix is deployed to two
+apps — one on Sonnet 4.6, one on Opus 4.7 — and only one of them caches:
+
+```
+   prefix length:   3,000 tokens
+   ────────────────────────────────────────────────────────────────
+   Sonnet 4.6   min cacheable = 1,024  │  3,000 ≥ 1,024  → CACHED
+   Opus 4.7     min cacheable = 4,096  │  3,000 < 4,096  → silently UNCACHED
+   ────────────────────────────────────────────────────────────────
+```
+
+On Sonnet the prefix clears the 1,024-token floor, so it caches and savings appear. On
+Opus the same 3,000 tokens sit below the 4,096-token floor, so nothing is cached — no
+error is raised, and `cache_creation_input_tokens` and `cache_read_input_tokens` both
+come back 0. Same prompt, same code, opposite outcome: always look up the minimum for
+the *specific* model.
+
 ### Check questions
 
 1. A prefix on Anthropic's 5-minute TTL is hit at 0:00, 0:04, and 0:09 (minutes). A
@@ -543,6 +660,14 @@ Concrete numbers, Claude Opus 4.7 (base input $5 / million tokens, output $25 / 
 | Cache read            | 0.1×       | $0.50        |
 | Output                | —          | $25.00       |
 
+And the break-even, one row per TTL tier — how many reads are needed before caching
+turns a profit:
+
+| TTL tier | Write penalty over base | Saving per read | Reads to break even |
+|----------|--------------------------|------------------|----------------------|
+| 5-minute | 0.25× (1.25× write)      | 0.9× (0.1× read) | **1 read**           |
+| 1-hour   | 1.0× (2× write)          | 0.9× (0.1× read) | **2 reads**          |
+
 **The break-even logic.** A cached prefix costs you 1.25× on the *write* (first call)
 and 0.1× on every *read* (subsequent calls). Compare against the no-cache cost of 1×
 every call.
@@ -554,6 +679,33 @@ So after the **first cache read**, the 0.9× saving already exceeds the 0.25× w
 penalty: **on the 5-minute TTL, caching pays off after just one reuse.** For the 1-hour
 TTL the write is 2× (a 1× penalty), so each read saves 0.9× — you need **two reads** to
 break even.
+
+Plotting cumulative cost against the number of calls makes the trade visible — the
+no-cache line is steep; the cached line starts higher (the write penalty) then stays
+nearly flat (cheap reads), and the two lines cross once reads have amortized the write:
+
+```
+  cumulative
+  cost  ▲
+        │                                          no-cache (1× every call)
+        │                                       ╱
+        │                                    ╱
+        │                                 ╱
+        │                              ╱
+        │              crossover    ╱
+        │                  ▼     ╱
+        │ ─ ─ ─ ─ ─ ─ ─ ─ ─╳─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+        │              ╱   │  ····························· cached
+        │           ╱  ····│····  (high start = write, then near-flat reads)
+        │       ╱·····      │
+        │  ····╳ ◄ cached line starts higher (1.25× write on call 1)
+        │ ·    │            │
+        └──────┴────────────┴──────────────────────────────────────►
+             call 1    break-even call         number of calls
+
+   Before the crossover, caching costs more. After it, every extra call
+   widens the gap — the more reuse, the larger the saving.
+```
 
 **Worked cost comparison.** A 10,000-token static prefix, Opus 4.7, 5-minute TTL, prefix
 reused across 100 requests:
@@ -602,6 +754,32 @@ it's reused 5 times within 5 minutes?
 - With cache: 1 write ($0.075) + 4 reads (4 × 20,000 × $0.30/Mtok = 4 × $0.006 =
   $0.024) = **$0.099**.
 - Savings ≈ **67%** even at just 5 reuses. Caching wins clearly.
+
+*Reading the usage object — cold vs. warm.* With a 20,000-token cached prefix and a
+~200-token user tail, the first (cold) call writes the cache and a later (warm) call
+reads it. The Anthropic `usage` objects differ characteristically:
+
+```
+  COLD call (cache miss — first request, writes the cache):
+  {
+    "cache_creation_input_tokens": 20000,   ← prefix written at the write multiplier
+    "cache_read_input_tokens":         0,   ← nothing to read yet
+    "input_tokens":                  200    ← the uncached tail at 1×
+  }
+
+  WARM call (cache hit — prefix reused):
+  {
+    "cache_creation_input_tokens":     0,   ← nothing re-written
+    "cache_read_input_tokens":     20000,   ← prefix served from cache at 0.1×
+    "input_tokens":                  200    ← the uncached tail at 1×
+  }
+```
+
+The **healthy-workload signature** is the warm pattern dominating after warm-up:
+`cache_read_input_tokens` large, `cache_creation_input_tokens` at or near 0. If
+`cache_creation` stays high call after call, the cache is being written but not read —
+an unstable prefix or a TTL/traffic mismatch — and caching is *costing* money. Note
+`total_input = cache_creation + cache_read + input_tokens` holds for both calls.
 
 ### Check questions
 

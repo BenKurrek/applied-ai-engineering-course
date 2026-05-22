@@ -207,6 +207,33 @@ print(resp.content)   # final text answer
 Notice the second `create` call re-sends the *whole* `messages` array — the original
 question, the model's tool request, and the result.
 
+The same round trip, drawn as a sequence — note the explicit boundary between the code
+you write and the model you call:
+
+```
+        YOUR CODE                          │              MODEL
+                                           │
+  messages=[user goal]  ───── send messages + tools ─────▶
+                                           │         (decides: needs a tool)
+                       ◀──── returns tool_use block ──────  stop_reason: "tool_use"
+                                           │         {name, input, id}
+  execute the function                     │
+    result = run_tool(name, input)         │
+                                           │
+  append assistant turn (echo tool_use)    │
+  append user turn (tool_result, same id)  │
+                                           │
+  messages now GROWN  ─── resend grown messages + tools ──▶
+                                           │         (sees the result)
+                       ◀──────── returns final text ───────  stop_reason: "end_turn"
+                                           │
+  print(final answer)                      │
+```
+
+The model never executes anything and never "waits" — each arrow crossing the boundary is
+a separate, stateless API call. Your code is the only thing that runs functions and the
+only thing that holds the conversation.
+
 ### Check questions
 
 1. A developer's tool-use loop works for one round trip but breaks on the second: they send the new `user` message with the tool_result but omit the model's previous `assistant` message. Why does this break, and what underlying API property makes the omitted message mandatory? — **Answer:** It breaks because the API is **stateless** — the model retains no memory between calls, so the *entire* conversation must be re-sent each turn. Omitting the assistant message that holds the tool_use block leaves a tool_result with nothing to pair against; the conversation is now malformed. You must echo that assistant message verbatim.
@@ -373,6 +400,37 @@ def dispatch(tool_call, ctx):
 ```
 
 The injection still produced a bad request — but the *code* refused to act on it.
+
+The gate that sits between the model's request and any real action:
+
+```
+   MODEL                  HARNESS GATE  (deterministic code)
+                ┌───────────────────────────────────────────┐
+  emits         │  ┌─────────────────┐                       │
+  tool_use ────▶│  │ validate schema │  args well-formed?    │
+                │  └────────┬────────┘                       │
+  (untrusted    │           ▼                                │
+   request)     │  ┌─────────────────┐                       │
+                │  │ check allowlist │  tool + target        │
+                │  └────────┬────────┘  permitted for caller?│
+                │           ▼                                │
+                │  ┌─────────────────┐                       │
+                │  │ require approval│  dangerous → HITL?     │
+                │  └────────┬────────┘                       │
+                │           ▼                                │
+                │      pass │ fail                           │
+                └───────────┼────────────────────────────────┘
+                            │
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+          EXECUTE                      REFUSE
+       (run the function)        (tool_result: error,
+                                  nothing happened)
+```
+
+Caption: enforcement is **code, not prompt** — every check above is deterministic logic
+that runs regardless of what the model "decided," so a wrong or injected request is
+stopped at the gate.
 
 ### Check questions
 
@@ -562,6 +620,18 @@ Later, for the final user-facing reply, you call the model again with
 `tool_choice: {type: "none"}` so it composes a natural-language answer and cannot
 accidentally trigger another tool.
 
+The four modes side by side (Anthropic naming, with the OpenAI equivalent):
+
+| Anthropic name | OpenAI name | Can answer with plain text? | Model picks which tool? | Typical use |
+|---|---|---|---|---|
+| `auto` | `auto` | Yes — model decides whether to call a tool at all | Yes | General-purpose assistants and agents; the default when tools are supplied |
+| `any` | `required` | No — must call some tool | Yes | Routing/classification where every turn must produce an action |
+| `tool` | named-function object | No — must call the named tool | No — you fix the tool | Forcing one known tool, e.g. an `extract_fields` tool for structured output |
+| `none` | `none` | Yes — text only, no tool can be called | n/a | A final summarization turn, or deliberately ending an agent loop |
+
+The general rule the table encodes: the further down the rows you go, the more model
+judgment you remove — constrain only when you genuinely want that decision gone.
+
 ### Check questions
 
 1. A candidate writes in a design doc: "We'll set `tool_choice` to `required` on Claude so the model must use a tool." Identify the error and explain what makes it an error. — **Answer:** `required` is OpenAI's name for that mode; Anthropic's equivalent is `any` (`required` would be rejected by the Anthropic API). The error is treating `tool_choice` modes and names as universal — they are provider-specific. The *concept* (force some tool) transfers; the exact string does not. Always check the docs for the provider and API version.
@@ -732,6 +802,35 @@ database through the same server. Ship a new tool on the server and every client
 on next connect — no client-side code change. Transport: `stdio` if the server runs
 locally beside the host, Streamable HTTP if it's a shared remote service.
 
+The structural change MCP makes — fully-meshed bespoke glue (N×M) becomes a hub (N+M):
+
+```
+        WITHOUT MCP  —  N×M custom integrations
+        (3 apps × 3 services = 9 bespoke connectors)
+
+        App A ─────┬─────┬─────  GitHub
+              ╲    │    ╱
+               ╲   │   ╱
+        App B ──┼──┼──┼───────  Postgres
+               ╱   │   ╲
+              ╱    │    ╲
+        App C ─────┴─────┴─────  Slack
+        (every line is custom code in both ends)
+
+
+        WITH MCP  —  N+M (3 apps + 3 servers = 6 connectors)
+
+        App A ─┐                    ┌─ GitHub server
+               │                    │
+        App B ─┼────▶  ┌───────┐  ───┼─ Postgres server
+               │       │  MCP  │     │
+        App C ─┘       └───────┘  ───┴─ Slack server
+              (one client each)   (one server each)
+```
+
+Each app implements the MCP client once; each service ships one MCP server. Adding a
+fourth app costs one connector, not three.
+
 ### Check questions
 
 1. A startup has 4 AI applications and wants each to integrate with 5 backend services. Quantify the integration work with and without MCP, and explain what MCP changes structurally. — **Answer:** Without MCP each (app, service) pair needs bespoke glue: 4 × 5 = 20 integrations. With MCP each service ships one MCP server and each app implements the client once: 5 + 4 = 9. MCP turns an N×M explosion into N+M by decoupling capability development from application development behind one standard interface — the structural change, not just a smaller number.
@@ -837,6 +936,24 @@ The harness runs it in the sandbox. All 200 tickets are fetched and filtered *th
 model's context receives only the handful of matching tickets via `print`. One model turn
 to write the script, one execution — versus dozens of round trips, and a fraction of the
 context cost.
+
+**Putting numbers on the context cost.** Say each ticket is ~300 tokens and 12 of the 200
+match the filter.
+
+- **Standard loop:** `list_tickets()` returns all 200 tickets as a `tool_result` —
+  `200 × 300 ≈ 60,000` tokens enter the model's context. Worse, because the API is
+  stateless that 60,000-token blob is *re-sent on every subsequent turn* of the run
+  (Topic 1.7); over even 5 more turns that is `~300,000` tokens billed just to keep a
+  table the model has already finished with. This is the quadratic re-billing of §8.12 in
+  miniature.
+- **Code mode:** all 200 tickets are fetched and filtered *inside the sandbox*; only the
+  12 matches are `print`-ed back — `12 × ~250 ≈ 3,000` tokens enter context. The other
+  188 tickets never leave the sandbox and are never billed again. That is roughly a **20×
+  reduction** in what enters context — and the gap *widens* every turn, because the 3,000
+  tokens (not 60,000) are what gets re-sent.
+
+The lever is *where the intermediate data lives*: in the standard loop it lives in
+context and is re-billed quadratically; in code mode it lives and dies in the sandbox.
 
 ### Check questions
 

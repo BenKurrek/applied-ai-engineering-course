@@ -95,6 +95,24 @@ you can switch as the frontier reorders, which it does every few months.
 
 ### Worked example
 
+Model cascading routes each request by *difficulty* — the cheap tier handles the bulk,
+the flagship is reserved for genuinely hard requests:
+
+```
+                      ┌──────────────────┐
+   request ─────────▶ │ difficulty router│
+                      └────────┬─────────┘
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+       ┌────────────┐   ┌────────────┐   ┌────────────┐
+       │   HAIKU    │   │   SONNET   │   │    OPUS    │
+       │ simple     │   │ default    │   │ hard       │
+       │ high-volume│   │ workhorse  │   │ deep reason│
+       │ cheapest   │   │ balanced   │   │ priciest   │
+       └────────────┘   └────────────┘   └────────────┘
+       most traffic ──▶ here ──▶ escalate only what needs it ──▶ here
+```
+
 A team building a coding agent benchmarks three options on their own eval set (not
 public leaderboards, to avoid contamination — Topic 9). On their tasks Claude Opus-class
 leads on multi-file agentic edits, Gemini wins when the task involves screenshots/
@@ -268,6 +286,17 @@ Completions remains supported) [5]. Key differences from Chat Completions:
   and remote MCP servers are invocable directly, without you orchestrating them.
 - **Better reasoning + caching** — designed for reasoning models, with improved prompt-
   cache utilization.
+
+The three API shapes side by side on the dimensions that actually differ:
+
+| | **Messages** (Anthropic) | **Chat Completions** (OpenAI) | **Responses** (OpenAI) |
+|---|---|---|---|
+| System prompt placement | Separate top-level `system` parameter | First message, `role: "system"` | First message / instructions field |
+| Tool-result role | `user` message with a `tool_result` block | `role: "tool"` message | `tool` / function-call-output item |
+| Tool-arg encoding | Structured object (`input`) | JSON-encoded **string** you parse | Structured object |
+| Response shape | Typed `content` blocks | `choices` array | Typed `items` list |
+| `max_tokens` | **Required** | Optional | Optional |
+| Statefulness | Stateless (resend history) | Stateless (resend history) | **Optional server-side state** (previous-response ID) |
 
 **What actually bites you in practice:** system-prompt placement (separate parameter
 vs. first message); tool-result roles (`user`+`tool_result` block vs. a `tool` message);
@@ -684,6 +713,34 @@ you decide whether a gateway buys you the abstraction layer or you build it your
   fallback it buys.
 
 ### Worked example
+
+The serving landscape as a map — your app reaches one of four ways to run a model, and
+a gateway is an *optional layer* that can wrap any of them:
+
+```
+   ┌──────────┐
+   │ your app │
+   └────┬─────┘
+        │
+        ▼
+   ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+        ┌─────────────────────────────────────────────────────┐
+   │    │  optional GATEWAY  (OpenRouter hosted / LiteLLM)     │  │
+        │  one endpoint · fallback · routing · unified billing │
+   │    └─────────────────────────────────────────────────────┘  │
+            wraps any one option below ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+        │
+        ├──────────────┬──────────────┬──────────────────┐
+        ▼              ▼              ▼                  ▼
+  ┌────────────┐ ┌────────────┐ ┌──────────────┐ ┌────────────────┐
+  │ first-party│ │ self-host  │ │ third-party  │ │ cloud-platform │
+  │ API        │ │ open model │ │ inference    │ │ model service  │
+  │ (Anthropic/│ │ on your    │ │ provider     │ │ (Bedrock /     │
+  │  OpenAI/   │ │ GPUs (vLLM/│ │ (Together,   │ │  Vertex /      │
+  │  Google)   │ │ SGLang/TGI)│ │ Fireworks,   │ │  Azure AI)     │
+  │            │ │            │ │ Groq, ...)   │ │                │
+  └────────────┘ └────────────┘ └──────────────┘ └────────────────┘
+```
 
 A team built on the OpenAI first-party API wants three things: a cheaper open model for
 high-volume simple requests, a Claude fallback for reliability, and one place to see

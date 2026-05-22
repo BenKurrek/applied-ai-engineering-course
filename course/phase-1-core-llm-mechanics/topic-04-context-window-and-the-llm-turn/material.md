@@ -106,6 +106,15 @@ message: "It's 19 °C and raining in Tokyo." Notice: four roles, one growing arr
 two LLM turns (one to request the tool, one to answer). The conversation lives entirely
 in that array.
 
+The four roles at a glance:
+
+| Role | Who/what it is from | Authority level | Typical content |
+|---|---|---|---|
+| `system` | The developer/application | Highest — the model was post-trained to treat it as most authoritative | Persona, rules, output format, constraints, guardrails |
+| `user` | The human (or calling app) | Below `system` — the thing to act on, not a privileged instruction | Questions, instructions, pasted data, the current request |
+| `assistant` | The model itself | The model's own prior output (can be prefilled on models that support it) | Past responses, tool-call requests |
+| `tool` | Your code, returning a tool/function result | Data to be read as an observation, not a command | JSON or text output of a tool the model called |
+
 ### Check questions
 
 1. You are designing a support agent. For each piece of text, say which *role* it
@@ -213,7 +222,26 @@ tokens. But the request actually sent to the API is the full array: system promp
 tokens) + turns 1–5 of user messages, assistant code blocks, and a couple of
 `tool_result` messages from file reads (together ~14,000 tokens) + the new 4-token
 message ≈ 14,800 input tokens for a 4-token ask. The model re-reads all 14,800 from
-scratch. At turn 15 the same chat might resend 40,000+ tokens. This is append-and-resend
+scratch.
+
+Append-and-resend visualized — each turn's array is the previous one plus new
+message(s); the brace marks the *resent prefix* the model re-reads every time:
+
+```
+          ╭──────────── resent prefix (re-billed as input each turn) ───────────╮
+ turn 1   │ system │ user₁ │                                                   │ ──► assistant₁
+          ╰─────────────────────────────────────────────────────────────────────╯
+          ╭───────── resent prefix ──────────╮
+ turn 2   │ system │ user₁ │ assistant₁ │ user₂ │                               ──► assistant₂
+          ╰───────────────────────────────────╯
+          ╭──────────────── resent prefix ─────────────────╮
+ turn 3   │ system │ user₁ │ assistant₁ │ user₂ │ assistant₂ │ user₃ │          ──► assistant₃
+          ╰─────────────────────────────────────────────────╯
+
+          the array only grows — every prior message is resent, in full, every turn
+```
+
+At turn 15 the same chat might resend 40,000+ tokens. This is append-and-resend
 in action — and exactly why long agent sessions get expensive and eventually need
 compaction (4.5, 4.7).
 
@@ -347,6 +375,27 @@ little else as possible."
 
 ### Worked example
 
+The context window is a single budget that *everything* in the request shares — and the
+model's *effective* context (where it still reliably uses information) ends well short
+of the hard window edge:
+
+```
+ ◄───────────────────── context window (hard limit) ──────────────────────►
+ ┌────────┬───────────┬─────────────────────┬──────────────────┬───────────┐
+ │ system │ tool defs │   history           │  retrieved docs  │  output   │
+ │ prompt │           │                     │                  │  reserve  │
+ └────────┴───────────┴─────────────────────┴──────────────────┴───────────┘
+ ◄──────── effective context ────────►┊                                    ▲
+   (reliably used)                    ┊                                    │
+                       quality starts ┘                          hard window
+                       degrading here                            edge (errors
+                                                                  beyond this)
+```
+
+Every segment competes for the same budget; the model's own generated output must fit
+inside it too (the "output reserve"), and packing tokens past the effective-context
+mark buys degraded quality, not free capacity.
+
 You build a document-QA feature on a model with a 1M-token window. Approach A: dump all
 200 company documents (~600k tokens) into every request and ask the question. It fits —
 but answers are inconsistent, slow, and expensive, and the model sometimes misses facts
@@ -474,6 +523,26 @@ decide what goes where.
   middle *larger*; the effect persists. Curation and ordering are the fix.
 
 ### Worked example
+
+The "lost in the middle" effect plotted — retrieval accuracy against where the relevant
+fact sits in the context. It is high at both ends and sags through the middle:
+
+```
+ accuracy
+   high │██                                                        ██
+        │██ █                                                    █ ██
+        │██ ██                                                  ██ ██
+        │██  ██                                                ██  ██
+        │██   ██                                              ██   ██
+        │██    ███                                          ███    ██
+        │██      ████                                    ████      ██
+   low  │██         ██████████████████████████████████████         ██
+        └────────────────────────────────────────────────────────────►
+          start                     middle                       end
+                            context position
+        ▲ primacy:                                       ▲ recency:
+          start frames the task                            most-recent, salient
+```
 
 You give a model a 60-page contract and ask "What is the termination notice period?"
 The answer — "90 days" — appears once, on page 31, right in the middle. The model
@@ -775,6 +844,32 @@ output is ~16,000 tokens (≈ $0.24). Input is ~88% of the bill — entirely bec
 append-and-resend. Add prompt caching on the stable ~5,000-token prefix and most of that
 resent input drops to ~10% rate, cutting the dominant cost substantially.
 
+To see the growth, trace the first five turns of a conversation where each turn adds a
+~600-token user message and a ~600-token assistant reply on top of a 1,000-token system
+prompt. The "resent input tokens" column is what that turn sends; the running total is
+the cumulative input billed so far:
+
+| Turn | Resent input tokens (this turn) | Running total input tokens |
+|---|---|---|
+| 1 | 1,600 (system + user₁) | 1,600 |
+| 2 | 2,800 (+ assistant₁ + user₂) | 4,400 |
+| 3 | 4,000 (+ assistant₂ + user₃) | 8,400 |
+| 4 | 5,200 (+ assistant₃ + user₄) | 13,600 |
+| 5 | 6,400 (+ assistant₄ + user₅) | 20,000 |
+
+Per-turn input grows *linearly* (each turn adds the same ~1,200), but the *running total*
+grows roughly *quadratically* — turn 5 alone resends 4× what turn 1 did, and the
+cumulative bill is 12.5× turn 1. That curve is why long conversations get expensive.
+
+The two billing buckets compared:
+
+| Aspect | Input tokens | Output tokens |
+|---|---|---|
+| Priced rate | Cheaper (the lower per-token rate) | More expensive — typically ~5× input on current frontier models |
+| Processed by | Parallel prefill (compute-bound) | Sequential decode (memory-bandwidth-bound) |
+| Billed how many times | Once per turn it is resent — so a long prefix is billed many times | Once, on the turn it is generated |
+| Re-billed as input? | Already input | Yes — a past assistant reply is resent as *input* on every later turn |
+
 ### Check questions
 
 1. The input/output price gap (e.g. Anthropic's 5×) is sometimes assumed to be a
@@ -895,6 +990,29 @@ RAG (Topic 10).
 
 ### Worked example
 
+The three strategies side by side — what happens to old turn #2 under each:
+
+```
+ SLIDING WINDOW          SUMMARIZATION           RETRIEVAL-ON-DEMAND
+ ┌──────────────┐        ┌──────────────┐        ┌──────────────┐
+ │ system (pin) │        │ system (pin) │        │ system (pin) │
+ ├──────────────┤        ├──────────────┤        ├──────────────┤
+ │ ░ turn 2  ░  │        │┌────────────┐│        │ recent turns │
+ │ ░ EVICTED ░  │        ││ summary of ││        │              │
+ │ ░ (FIFO)  ░  │        ││ turns 1–8  ││        ├──────────────┤
+ ├──────────────┤        │└────────────┘│        │ retrieved    │
+ │ turn 9       │        ├──────────────┤        │ snippet      │◄─┐
+ │ turn 10      │        │ turn 9       │        │ (turn 2)     │  │
+ │ turn 11      │        │ turn 10      │        └──────────────┘  │
+ └──────────────┘        └──────────────┘                          │
+   keeps last N,           condenses old             ┌─────────────┴──────┐
+   deletes oldest          turns into a               │ external store     │
+   — gone for good         lossy digest               │ (full history) ────┘
+                                                       └────────────────────┘
+                                                         fetched only when
+                                                         the turn is referenced
+```
+
 A customer-support agent that may run for hundreds of turns. A pure **sliding window**
 of 10 turns keeps it cheap but fails the moment the customer references an order number
 they gave 15 turns ago — it has been evicted. Pure **summarization** keeps the gist but
@@ -905,6 +1023,14 @@ everything older for general continuity ("customer is troubleshooting a returned
 laptop, prefers email contact"); and store every turn in an external memory so exact
 details — order numbers, prior tickets — can be **retrieved on demand** when the
 conversation references them. Cheap window, durable memory, nothing critical lost.
+
+The three strategies' trade-offs:
+
+| Strategy | Mechanism | Pros | Cons | Best for |
+|---|---|---|---|---|
+| Sliding window | Keep most recent N turns/tokens, evict the oldest (FIFO); pin the system prompt | Trivially simple; predictable cost and latency; fully cacheable prefix | Lossy with no recovery — evicted turns are gone | Casual chat where old context rarely matters |
+| Summarization (rolling/recursive) | Replace the oldest segment with a model-generated summary; re-summarize over time | Preserves the *gist* cheaply; far better continuity than a blind window | Lossy (can drop the wrong detail); extra model call per summary; errors compound | Long assistant/agent conversations that must remember earlier decisions |
+| Retrieval-on-demand | Store full history in an external store; retrieve only relevant pieces per turn | Effectively unbounded memory; small, cheap window; nothing permanently lost | Most complex to build; retrieval can miss or pull noise; adds a latency hop | Agents/assistants needing durable, large-scale, exact memory |
 
 ### Check questions
 

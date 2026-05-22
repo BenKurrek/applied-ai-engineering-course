@@ -60,6 +60,30 @@ strongly biases behavior but does not guarantee it. Anything that *must* hold �
 permission checks, spend limits, allowlists — has to be enforced in code below the
 model, not just requested in the system prompt.
 
+The instruction hierarchy can be pictured as a stack: each level can be overridden
+by the ones above it, never the other way around.
+
+```
+        ┌──────────────────────────────────────┐
+        │  SYSTEM      role, hard rules, policy │  highest priority
+        └──────────────────────────────────────┘
+                          │ overrides ↓
+        ┌──────────────────────────────────────┐
+        │  DEVELOPER    app-level instructions  │
+        └──────────────────────────────────────┘
+                          │ overrides ↓
+        ┌──────────────────────────────────────┐
+        │  USER         the end-user's request  │
+        └──────────────────────────────────────┘
+                          │ overrides ↓
+        ┌──────────────────────────────────────┐
+        │  TOOL         tool / function output  │  lowest priority
+        └──────────────────────────────────────┘
+
+   On conflict, the higher box wins. A USER turn cannot override a
+   SYSTEM rule; a TOOL result cannot override a USER instruction.
+```
+
 ### Key terms
 
 - **System prompt** — the privileged instruction block at the front of the context that
@@ -219,6 +243,14 @@ failure is the model falling back on a pretrained prior you need to override, *a
 example block can be cached. Otherwise a tight few-shot set is cheaper and usually
 enough.
 
+The three regimes side by side:
+
+| Regime     | # examples   | What it does                                  | Best for                                          | Main risk                                  | Cost                                |
+|------------|--------------|-----------------------------------------------|----------------------------------------------------|---------------------------------------------|-------------------------------------|
+| Zero-shot  | 0            | Instructions only; relies on pretrained ability| Tasks the model already does well; reasoning models| Ambiguity the prose didn't pin down          | Cheapest — no example tokens        |
+| Few-shot   | ~1–10        | Steers format/style by showing the pattern    | Fixing *form* errors; hard-to-describe boundaries  | Label/length bias; one bad example hurts     | Modest — a few hundred prefix tokens|
+| Many-shot  | ~dozens–100s | Can *override* a pretrained prior, not just steer it | Counter-intuitive taxonomies; custom labeling schemes | Systematic mislabeling; constrains reasoning models | High — thousands of tokens; needs caching |
+
 ### Key terms
 
 - **Shot** — a worked input→output example included in the prompt.
@@ -269,6 +301,27 @@ Message: "I was charged twice and the app crashed." →
 Note the examples are balanced (one per class) and diverse. If all three examples were
 `billing`, the model would lean toward `billing` for the ambiguous case — that is label
 bias in action.
+
+*Many-shot — overriding a prior.* Now suppose the taxonomy is deliberately
+counter-intuitive: an internal policy says a *security report* must be labeled `other`
+(it routes to a separate security team, not engineering), even though every model's
+pretrained common sense screams `bug`. With a dozen examples the model keeps answering
+`bug`; only a few hundred consistent examples flip it. This is the flipped-label /
+counter-intuitive-taxonomy case — the in-context scheme has to *win* over the prior:
+
+```
+Classify the message. Reply with exactly one label: billing, bug, or other.
+
+Message: "Why was I charged $20 this month?"            →  billing
+Message: "The export button does nothing."               →  bug
+Message: "I found an XSS hole in your login form."        →  other   ← counter-intuitive
+[ ... 247 more labeled examples, security reports consistently → other ... ]
+Message: "Someone could SQL-inject your search box." →
+```
+
+With only 3 examples the model answers `bug` from its prior; with ~250 consistent
+examples it learns the in-context rule and answers `other`. The example block is
+thousands of tokens, so it is only economical behind a prompt cache (Topic 6).
 
 ### Check questions
 
@@ -381,6 +434,14 @@ So the modern rule of thumb: for a *non-reasoning* model on a multi-step task, p
 for CoT explicitly. For a *reasoning* model, don't — give it a clear objective and tune
 its effort level instead.
 
+The two model classes call for opposite prompting moves:
+
+| Aspect              | Non-reasoning model                          | Reasoning model                                     |
+|---------------------|-----------------------------------------------|-----------------------------------------------------|
+| Prompt for CoT?     | Yes — add "think step by step" on multi-step tasks | No — it already reasons; the trigger is redundant and can interfere |
+| Few-shot examples?  | Often helps (especially for *form*)            | Often neutral or harmful — can constrain its own reasoning |
+| What knob?          | Wording of the CoT scaffold; temperature       | Reasoning-effort / thinking-budget knob (`effort`, `reasoning_effort`) |
+
 ### Key terms
 
 - **Chain-of-thought (CoT)** — prompting the model to emit intermediate reasoning before
@@ -410,24 +471,39 @@ its effort level instead.
 
 ### Worked example
 
-Non-reasoning model, no CoT:
+Non-reasoning model, no CoT — a genuinely multi-step task (sum a list, subtract a
+discount, then apply tax):
 
 ```
-Q: A shop sells pens at 3 for $2. How much for 12 pens?
-A: $6
+Q: An order has items at $40, $25, and $15. Apply a 10% discount, then add 8% sales
+   tax. What is the final total?
+A: $80
 ```
 
-(Often wrong because the model commits to an answer token immediately.)
+(Often wrong because the model commits to an answer token immediately, skipping the
+chain of dependent sub-computations.)
 
 With zero-shot CoT:
 
 ```
-Q: A shop sells pens at 3 for $2. How much for 12 pens? Think step by step.
-A: 12 pens is 12/3 = 4 groups of 3. Each group costs $2. 4 × $2 = $8. Answer: $8.
+Q: An order has items at $40, $25, and $15. Apply a 10% discount, then add 8% sales
+   tax. What is the final total? Think step by step.
+A: Step 1 — sum the items: 40 + 25 + 15 = 100.
+   Step 2 — apply the 10% discount: 100 × 0.90 = 90.   ← load-bearing scratchpad value
+   Step 3 — apply 8% tax: 90 × 1.08 = 97.20.
+   Answer: $97.20.
 ```
 
-With a reasoning model you would simply ask `"How much for 12 pens?"` — it produces the
-intermediate steps internally and you'd set effort to `low` since the task is easy.
+The Step 2 result, `90`, is the **load-bearing scratchpad value**: it is the
+discounted subtotal that Step 3 *must* read to apply tax correctly. If the model tried
+to jump straight to an answer it would have to hold `90` "in its head" within one
+forward pass; writing it into the context lets Step 3 attend to it directly. Get Step 2
+wrong and Step 3 faithfully builds on the wrong number — which is exactly why the
+intermediate is worth surfacing.
+
+With a reasoning model you would simply ask the question without "think step by step" —
+it produces the intermediate steps internally and you'd set effort to `low` since the
+task is easy.
 
 ### Check questions
 
@@ -696,11 +772,31 @@ is valid JSON with no preamble.
 
 *Current approach (structured outputs).* On Sonnet 4.6 / Opus 4.7, pass a JSON schema
 via `output_config.format` so the API itself constrains and validates the response —
-the model returns guaranteed-valid JSON, no preamble to strip, no prefill needed:[1]
+the model returns guaranteed-valid JSON, no preamble to strip, no prefill needed.
+A concrete 3-field schema for the name/age task:[1]
 
 ```
-output_config={"format": {"type": "json_schema", "json_schema": { ...schema... }}}
+output_config={
+  "format": {
+    "type": "json_schema",
+    "json_schema": {
+      "type": "object",
+      "properties": {
+        "name":     {"type": "string"},
+        "age":      {"type": "integer", "minimum": 0},
+        "verified": {"type": "boolean"}
+      },
+      "required": ["name", "age", "verified"],
+      "additionalProperties": false
+    }
+  }
+}
 ```
+
+The API constrains generation to this schema, so the response is guaranteed to be an
+object with exactly those three typed fields — `name` (string), `age` (non-negative
+integer), `verified` (boolean) — and no extra keys. There is no preamble to strip and
+no risk of a malformed object, which the prefill trick could never guarantee.
 
 ### Check questions
 
@@ -750,7 +846,29 @@ the prompt — especially after a long document.
 be under-weighted or missed (covered in Topic 4 as context rot). The "lost in the
 middle" effect was characterized by Liu et al. (2023): model performance is highest when
 relevant information is at the *start or end* of the input and degrades significantly
-when it sits in the middle — even for explicitly long-context models.[4] An important
+when it sits in the middle — even for explicitly long-context models.[4]
+
+Plotting effective attention weight against position in the prompt traces a U-curve:
+
+```
+ weight
+  high │█                                                      █
+       │█▒                                                    ▒█
+       │ ▒░                                                  ░▒
+       │  ░                                                  ░
+       │   ░░                                              ░░
+       │     ░░░                                        ░░░
+   low │        ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+       └───────────────────────────────────────────────────────────
+        start                  position in prompt                end
+
+        └─ PRIMACY ─┘      └─── lost in the middle ───┘     └─ RECENCY ─┘
+         system prompt,      buried instructions are          user question,
+         role, policy        under-weighted here              "do this now"
+```
+
+Put durable framing in the PRIMACY zone, the actual request in the RECENCY zone, and
+never bury a load-bearing instruction in the middle trough. An important
 instruction buried at line 400 of a 900-line prompt is the worst possible place for it.
 
 The practical pattern for a long prompt with a big document: **system prompt (role,
@@ -1135,6 +1253,31 @@ keep the winners, repeat.[9] The common shape is always the same loop: **propose
 set → select → repeat.** What differs is how candidates are proposed and how the search
 is steered.
 
+That loop is a 4-node cycle — every method here is a walk around it:
+
+```
+        ┌──────────────────────────┐
+        │  1. PROPOSE candidates   │ ◄────────────────┐
+        │  (LLM mutates / generates│                  │
+        │   prompt variants)       │                  │
+        └────────────┬─────────────┘                  │
+                     │                                │
+                     ↓                                │ loop back:
+        ┌──────────────────────────┐                  │ propose from
+        │  2. SCORE on eval set    │                  │ the winner
+        │  (run each candidate,    │                  │
+        │   measure the metric)    │                  │
+        └────────────┬─────────────┘                  │
+                     │                                │
+                     ↓                                │
+        ┌──────────────────────────┐                  │
+        │  3. SELECT best          │ ─────────────────┘
+        │  (keep the top scorer)   │  ↻
+        └──────────────────────────┘
+
+   No eval set → no step 2 → no loop. The metric is what makes it a search.
+```
+
 **DSPy — programming, not prompting.** DSPy is a framework that pushes this furthest.[8]
 You write a pipeline as *typed modules* with declared input/output **signatures** (e.g.
 `question -> answer`) instead of hand-written prompt strings. You supply a metric and a
@@ -1146,6 +1289,16 @@ that when you change the model, you *recompile* rather than re-hand-tune every p
 the optimization is reproducible and model-specific by construction. The mental shift
 DSPy forces: you specify *what* each step should do (the signature) and *how good* is
 defined (the metric), and you let the optimizer decide the exact prompt wording.
+
+The four approaches differ in how much of the prompt the human writes versus what a
+search procedure derives:
+
+| Approach                      | What the human specifies                          | What is searched                                  | Requires                                       |
+|-------------------------------|---------------------------------------------------|----------------------------------------------------|-------------------------------------------------|
+| Hand-writing                  | The entire prompt string                          | Nothing — the human *is* the optimizer             | Only intuition (and ideally an eval set to check)|
+| Meta-prompting (failure-loop) | The task description + a batch of failing cases   | Prompt revisions, proposed by an LLM, judged by the metric | An LLM proposer + an eval set            |
+| Automatic prompt optimization | The task + the metric; candidate-generation config | Instruction wordings (APE, OPRO, evolutionary)    | An eval set + a metric                          |
+| DSPy                          | A typed signature + a metric (not prompt text)    | Prompt wording *and* few-shot demonstrations        | An eval/training split + a metric               |
 
 **When to invest.** Hand-writing is fine for one or two prompts, or early exploration
 when you do not yet have an eval set. Optimization pays off when (a) you have a real eval
@@ -1195,6 +1348,45 @@ approaches:
    "Here is the prompt, here are cases it got wrong with the correct labels. Diagnose why
    and rewrite the prompt." It returns a revision that sharpens an ambiguous category
    boundary. You re-run the eval: 0.71 → 0.78. Kept — because it *measured* better.
+
+   It is worth seeing the actual artifacts that move through this loop, not just the
+   metric jump. **(a) The failing-cases payload** handed to the model:
+
+   ```
+   <current_prompt>
+   Classify each support message as billing, bug, or other.
+   </current_prompt>
+
+   <failing_cases>
+   { "message": "I was double-charged AND the receipt page is broken",
+     "predicted": "bug",     "correct": "billing" }
+   { "message": "My invoice shows the wrong tax rate",
+     "predicted": "other",   "correct": "billing" }
+   { "message": "Refund hasn't arrived after 5 days",
+     "predicted": "other",   "correct": "billing" }
+   ... 27 more ...
+   </failing_cases>
+
+   Diagnose why the prompt produces these errors, then rewrite it.
+   ```
+
+   **(b) A snippet of the model's diagnosis:**
+
+   ```
+   The errors cluster on messages that mention BOTH a billing problem and a
+   technical symptom, or that describe a money problem without the word "charge".
+   The prompt never says billing takes precedence, so the model picks bug or other.
+   ```
+
+   **(c) The one-line prompt edit it proposed:**
+
+   ```
+   + If a message involves a payment, invoice, refund, or charge, label it
+   + `billing` even when it also describes a technical fault.
+   ```
+
+   That single added rule is the candidate — and it only counts as an improvement
+   because the eval then confirmed 0.71 → 0.78.
 2. *Automatic prompt optimization.* Have a model generate 40 instruction variants, score
    each on the eval set, keep the top one: 0.78 → 0.82.
 3. *DSPy.* Express the step as a signature `text -> label`, give it the metric (F1) and a
@@ -1286,6 +1478,26 @@ Decomposition is not always chaining. Two other shapes:
 - **Routing.** A first cheap classification call decides *which* specialized prompt or
   model handles the request (a billing question vs. a bug report), then dispatches to it.
 
+The three decomposition shapes, side by side:
+
+```
+   CHAIN (sequential)        FAN-OUT (parallel)          ROUTING (dispatch)
+
+      ┌───┐                      ┌───────┐                   ┌──────────┐
+      │ A │                      │ split │                   │ classify │
+      └─┬─┘                      └┬──┬──┬┘                    └────┬─────┘
+        │ output→input            │  │  │                         │ label
+      ┌─▼─┐                     ┌─▼┐┌▼┐┌▼─┐                  ┌─────┴─────┐
+      │ B │                     │B1││B2││B3│  (run at once)   ▼           ▼
+      └─┬─┘                     └─┬┘└┬┘└┬─┘               ┌───────┐  ┌───────┐
+        │ output→input            │  │  │                 │billing│  │  bug  │
+      ┌─▼─┐                      ┌─▼──▼──▼┐                │ prompt│  │ prompt│
+      │ C │                      │ merge  │                └───────┘  └───────┘
+      └───┘                      └────────┘
+   each step feeds the      no step depends on        one classify call picks
+   next; latency = sum      another; latency = 1       exactly one branch to run
+```
+
 **Self-consistency** is a different and complementary technique. Plain chain-of-thought
 (5.3) generates *one* reasoning path; if that path takes a wrong turn, the answer is
 wrong. Self-consistency instead samples **multiple independent reasoning paths** for the
@@ -1307,6 +1519,24 @@ Be precise about what self-consistency is and is not:
 - It overlaps in spirit with reasoning models (5.3): a reasoning model already explores
   internally, so self-consistency over a *reasoning* model has a smaller marginal
   benefit than over a non-reasoning model — measure before paying for it.
+
+Self-consistency fans one prompt into N sampled reasoning paths, then collapses their
+final answers into a majority vote:
+
+```
+                          ┌─ CoT path 1 ──→ answer: 42
+                          │
+                          ├─ CoT path 2 ──→ answer: 42
+   same prompt,           │                                  ┌──────────────┐
+   N samples   ──────────►├─ CoT path 3 ──→ answer: 17  ─────►│ MAJORITY VOTE│──→ 42
+   (temp > 0)             │                                  │  over final  │
+                          ├─ CoT path 4 ──→ answer: 42       │   answers    │
+                          │                                  └──────────────┘
+                          └─ CoT path 5 ──→ answer: 42
+
+   Errors (path 3) are idiosyncratic and scattered; the correct answer
+   is the one most paths converge on. Cost ≈ N×; needs an aggregatable answer.
+```
 
 Decomposition/chaining and self-consistency answer different questions. Chaining asks
 *"how do I structure a task too big for one prompt?"*; self-consistency asks *"how do I
@@ -1369,6 +1599,35 @@ incomplete. Steps 1's extraction can be evaluated on its own labeled set.
 you sample the classification 5× at temperature 0.7 and take the majority verdict per
 obligation, cutting idiosyncratic misreads — self-consistency operating *inside* one link
 of the chain.
+
+*Fan-out.* Task: "Summarize these 6 quarterly reports into one combined briefing." The
+6 summaries are independent — no report's summary needs another — so this is a fan-out,
+not a chain:
+
+```
+6 parallel calls (issued at once):
+  call A: summarize report Q1   ┐
+  call B: summarize report Q2   │
+  call C: summarize report Q3   ├──► 6 summaries
+  call D: summarize report Q4   │
+  call E: summarize report Q5   │
+  call F: summarize report Q6   ┘
+then 1 synthesis call: "Combine these 6 summaries into one briefing." → briefing
+```
+
+Total latency is ~2 calls (one parallel batch + one synthesis), not 7 sequential calls.
+A chain here would needlessly serialize independent work.
+
+*Routing.* Task: dispatch an incoming support ticket. One cheap classification call
+decides the branch:
+
+```
+classify("My card was charged twice")  →  "billing"  →  run the billing-specialist prompt
+classify("The app crashes on export")  →  "bug"      →  run the bug-triage prompt
+```
+
+The router call does no real work itself — it just picks which specialized prompt runs
+next, so each branch can be tuned (and cached) independently.
 
 ### Check questions
 

@@ -82,6 +82,30 @@ post-training-scale, and knowledge lives in pretraining-scale.
 
 ### Worked example
 
+The two stages laid out as a pipeline — box width is drawn roughly to scale with *cost*,
+which makes the headline point visual: pretraining dwarfs everything after it.
+
+```
+ ◀──────────────────── relative cost (box width ≈ $) ────────────────────▶
+
+ ┌──────────────────────────────────────────────┐┌────┐┌─────────────┐┌────┐
+ │██████████████████████████████████████████████││▏SFT││▏preference  ││▏saf│
+ │████████████ PRETRAINING ██████████████████████││    ││  optim:     ││ ety│
+ │██ self-supervised next-token prediction ██████││    ││ RLHF/RLAIF  ││ /  │
+ │██ trillions of tokens · months · $10M–$100M+ ██││    ││ /DPO        ││eval│
+ └──────────────────────────────────────────────┘└────┘└─────────────┘└────┘
+                       │                                      │
+                       ▼                                      ▼
+                  ┌──────────┐                        ┌──────────────────┐
+                  │BASE MODEL│                        │ ALIGNED ASSISTANT │
+                  │capability│                        │ behavior, helpful,│
+                  │ but no   │                        │ formatted, safe   │
+                  │ aligned  │                        └──────────────────┘
+                  │ behavior │
+                  └──────────┘
+   ◀──── PRETRAINING: knowledge & capability ────▶◀── POST-TRAINING: behavior ──▶
+```
+
 You download a raw base model and prompt it: "What is the capital of France?" Instead of
 "Paris," it outputs: "What is the capital of Germany? What is the capital of Spain?" —
 it is continuing a *list of trivia questions*, the kind of text it saw in pretraining.
@@ -194,6 +218,29 @@ RLAIF / DPO, often with a CAI component) → safety/eval passes.**
 
 ### Worked example
 
+RLHF is a cycle through a reward model and an RL loop; DPO takes a shortcut that
+optimizes the policy straight from the preference pairs, skipping that whole middle:
+
+```
+        ┌─────────────────────────────────────────────────────────┐
+        │                    RLHF cycle                           │
+        ▼                                                         │
+  ┌────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+  │ SFT model  │──▶ │ sample 2     │──▶ │ human picks  │──▶ │ reward model │
+  │ (policy)   │    │ responses to │    │ the better   │    │ trains on    │
+  │            │    │ same prompt  │    │ one          │    │ preferences  │
+  └────────────┘    └──────┬───────┘    └──────────────┘    └──────┬───────┘
+        ▲                  │                                       │
+        │                  │                                       ▼
+        │           ┌──────┴──────────────────────┐         ┌──────────────┐
+        │           │           DPO shortcut       │         │ RL updates   │
+        └───────────┤  optimize policy DIRECTLY on │◀────────┤ policy to    │
+                    │  preference pairs —          │         │ maximize     │
+                    │  NO reward model, NO RL loop │         │ reward       │
+                    └──────────────────────────────┘         └──────────────┘
+              DPO bypasses the reward-model + RL middle entirely
+```
+
 Why preference optimization beats SFT alone: imagine teaching a model to write good
 explanations. With SFT you collect human-written ideal explanations and the model
 imitates them — fine, but capped at the demonstrators' average. With RLHF/DPO you
@@ -296,6 +343,28 @@ LoRA under the hood.
 
 ### Worked example
 
+LoRA leaves the big weight matrix `W` frozen and adds a trainable side-path: two thin
+matrices `B` and `A` whose product approximates the update — the trainable-parameter
+count collapses by ~100×:
+
+```
+        FROZEN (not trained)              TRAINABLE (the LoRA adapter)
+   ┌──────────────────────────┐
+   │                          │                ┌─┐
+   │                          │                │ │ B            ┌──────────────┐
+   │            W             │      +         │ │ (4096×r)  ·  │  A (r×4096)  │
+   │       4096 × 4096        │                │ │              └──────────────┘
+   │       ≈ 16.8M params     │                └─┘
+   │                          │              B·A ≈ ΔW   (the low-rank update)
+   │                          │
+   └──────────────────────────┘          rank r = 16 →  2 × (4096 × 16)
+   trainable params: 0 (frozen)           ≈ 131k trainable params  (~128× fewer)
+
+   forward pass:  h = W·x  +  B·(A·x)
+                       │           │
+                  frozen base   tiny learned adapter
+```
+
 A SaaS company wants its assistant to match each enterprise customer's brand voice and
 internal terminology. Full fine-tuning means one ~140 GB copy of a 70B model per
 customer — infeasible. With LoRA they train one ~30 MB adapter per customer on top of a
@@ -378,6 +447,13 @@ at very low precision.
 The clean contrast: **distillation = smaller model (fewer parameters), trained to
 imitate a bigger one; quantization = same model (same parameters), stored at lower
 precision.** They are complementary — you can distill *and* then quantize the student.
+Side by side on the three axes that separate them:
+
+| | **Distillation** | **Quantization** |
+|---|---|---|
+| Parameter count | **Changes** — student has fewer parameters (e.g. 70B → 7B) | **Unchanged** — same count, e.g. 70B stays 70B |
+| Bits per parameter | Unchanged (student trained at normal precision) | **Reduced** — BF16 → FP8 / INT8 / 4-bit |
+| Produces | A *different, smaller model* trained to imitate the teacher | The *same model*, stored/computed at lower precision |
 
 ### Key terms
 
@@ -748,6 +824,27 @@ Trade-offs:
 
 ### Worked example
 
+For each token, the router picks the top-2 of N experts; the rest are skipped (dimmed)
+and never run for that token:
+
+```
+                       ┌──────────┐
+        token ───────▶ │  ROUTER  │  scores all N experts, keeps top-2
+                       └────┬─────┘
+            ┌───────┬───────┼───────┬───────┬───────┐
+            ▼       ▼       ▼       ▼       ▼       ▼
+         ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
+         │ E1  │ │█E2█ │ │ E3  │ │ E4  │ │█E5█ │ │ E6  │  ... up to E_N
+         │·skip│ │ RUN │ │·skip│ │·skip│ │ RUN │ │·skip│
+         └─────┘ └──┬──┘ └─────┘ └─────┘ └──┬──┘ └─────┘
+                    └──────────┬───────────┘
+                               ▼
+                       shared layers + E2 + E5  →  this token's output
+
+   TOTAL  = shared + all N experts   →  capacity / knowledge (can be huge)
+   ACTIVE = shared + 2 experts       →  per-token compute cost & speed
+```
+
 Take the documented **DeepSeek-V3** MoE — **671B total / ~37B active** [7] — against a
 hypothetical *dense* 37B model. Per token both do roughly the same amount of computation
 (~37B parameters), so they have broadly comparable per-token inference speed and cost.
@@ -855,6 +952,29 @@ Key applied points:
   range so the model sees only familiar angles.
 
 ### Worked example
+
+On a position number line, naive long context *extrapolates* past the trained band into
+positions the model has never seen; position interpolation *compresses* the long
+sequence back inside the trained band:
+
+```
+  trained band (rotation angles the model has seen)
+  ┌─────────────────────────────┐
+  │░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
+  0          ...               8k
+  position:  0 ─────────────────────────────────────────────── 32k
+
+  NAIVE (extrapolation):
+  │░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│  8k ────────────────────────▶ 32k
+  └──── in-distribution ─────────┘  └──── OUT OF DISTRIBUTION ───┘
+                                      angles never seen → attention breaks
+
+  POSITION INTERPOLATION:
+  ┌─────────────────────────────┐
+  │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│   all 32k positions scaled DOWN
+  0   1k positions packed per 0.25  into the 0–8k trained band
+      → every position lands on a familiar (fractional) angle
+```
 
 A team has an 8k-context open model and needs 32k. Naively feeding a 32k prompt
 produces garbled, incoherent output past ~8k — RoPE positions beyond 8k are out of

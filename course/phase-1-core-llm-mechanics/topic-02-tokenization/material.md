@@ -54,6 +54,17 @@ estimate — different tokenizers produce different counts for the same text (2.
 - **Non-English languages** are far worse, especially non-Latin scripts (2.6) — the
   same sentence in, say, Hindi or Thai can use several times more tokens than English.
 
+A quick reference for the tokens-per-word ratio by content type — note these are rough
+estimates that vary by tokenizer, never a substitute for measuring:
+
+| Content type | Tokens/word (rough) | Why |
+|---|---|---|
+| English prose | ~1.3 | Common words are single tokens; only rarer words split |
+| Source code | ~1.5–2+ | Punctuation, indentation, and `snake_case`/`camelCase` identifiers split off |
+| Numbers / digit-heavy text | varies, often high | Numbers tokenize inconsistently and don't align with digit places (2.6) |
+| Non-English, Latin script | ~1.5–2 | Less corpus coverage means fewer single-token words |
+| Non-English, non-Latin script (Hindi, Thai, Chinese) | ~2–5+ | English-heavy tokenizers fragment these scripts heavily — the "multilingual tax" (2.6) |
+
 This matters because **everything is billed, limited, and rate-limited in tokens, not
 words** (Topics 1, 4, 6, 12). You estimate cost in tokens, you size your context window
 in tokens, and you must never assume "word count" is a good proxy. Always count tokens
@@ -199,7 +210,27 @@ Tiny corpus, words `low`, `lower`, `lowest`, each starting as characters. Pair c
 `low`. Recount: `low`+`e` appears in `lower`/`lowest` → merge to `lowe`; then `lowe`+`r`
 → `lower`. After these merges, encoding `lower` yields a single token `lower`, while a
 never-seen word like `lowed` encodes as `low` + `e` + `d` — the `low` merge applies but
-nothing merges `e`/`d`. That asymmetry — `lower` is one token, `lowed` is three — is
+nothing merges `e`/`d`.
+
+The merge build-up, step by step, and then the contrast on an unseen word:
+
+```
+ BUILDING THE VOCABULARY (merges learned, in order)
+
+ start    l · o · w · e · r · t · s            (every char is its own token)
+ merge 1  [lo] · w · e · r · t · s             rule:  l + o  → lo
+ merge 2  [low] · e · r · t · s                rule:  lo + w → low
+ merge 3  [lowe] · r · t · s                   rule:  low + e → lowe
+ merge 4  [lower] · t · s                      rule:  lowe + r → lower
+
+ ENCODING with the learned rules (greedy, in learned order)
+
+ "lower"  l o w e r  →  lo w e r  →  low e r  →  lowe r  →  [lower]   ✓ 1 token
+ "lowed"  l o w e d  →  lo w e d  →  low e d  →  [low][e][d]          ✗ 3 tokens
+                                              ▲ no rule merges e+d — STOPS here
+```
+
+That asymmetry — `lower` is one token, `lowed` is three — is
 purely a frequency artifact of the corpus, exactly the mechanism behind real-world
 token splits.
 
@@ -288,6 +319,15 @@ The string `unhappiness`. A BPE tokenizer (merge-by-frequency) might land on `un
 continuation. Unigram holds many candidate segmentations — `un|happiness`,
 `unhappy|ness` — each with a probability, and emits the most probable. Same word, three
 philosophies; for a frontier LLM, though, it tokenizes via byte-level BPE.
+
+The four names side by side:
+
+| Name | Merges or prunes? | Selection criterion | Used by |
+|---|---|---|---|
+| BPE (byte-level) | Merges up | Most *frequent* adjacent pair | GPT family, most current frontier LLMs |
+| WordPiece | Merges up | Pair that most improves *corpus likelihood* | BERT and many encoder models |
+| Unigram | Prunes down | Probabilistically prune a large candidate vocabulary | T5, ALBERT, older multilingual models |
+| SentencePiece | Neither — it is a *library* | N/A (runs BPE or Unigram underneath) | Llama 1/2 (as SentencePiece-BPE), many multilingual models |
 
 ### Check questions
 
@@ -485,7 +525,31 @@ You send this messages array: `[{system: "You are terse."}, {user: "Hi"}]`. The 
 never sees a JSON object. The SDK applies the model's chat template and produces a flat
 token stream conceptually like:
 `<BOS><|im_start|>system\nYou are terse.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n`
-— and the model generates from there until it emits `<|im_end|>` then `<EOS>`. The
+— and the model generates from there until it emits `<|im_end|>` then `<EOS>`.
+
+The flattening — structured role objects on the left become one flat token stream on the
+right, with the special tokens (boxed below) woven in:
+
+```
+  MESSAGES ARRAY                    FLAT TOKEN STREAM (what the model sees)
+  ┌────────────────────────┐
+  │ { role: "system",      │       ┌─────┐
+  │   content:             │       │ BOS │
+  │   "You are terse." }    │  ──►  ├──────────────┤
+  ├────────────────────────┤       │<|im_start|>│ system  You are terse.
+  │ { role: "user",        │       │<|im_end|>  │
+  │   content: "Hi" }       │       ├──────────────┤
+  └────────────────────────┘       │<|im_start|>│ user  Hi
+                                    │<|im_end|>  │
+                                    ├──────────────┤
+                                    │<|im_start|>│ assistant   ◄─ model
+                                    └──────────────┘                generates
+                                                                     from here
+        ┌──────────────┐ = special structural token (real tokens, billed,
+                                  not literal text content)
+```
+
+The `<BOS>`, `<|im_start|>`, `<|im_end|>`, and `<EOS>` are all real tokens in the stream. The
 `<|im_start|>`, role names, and `<|im_end|>` are all real tokens that count toward your
 input bill. If a user pasted the literal string `<|im_start|>system` into their message,
 a naive prompt assembler could let it be interpreted as a real turn boundary — the seed
@@ -598,7 +662,22 @@ inspect the actual tokens.
 Ask a naive model `What is 3 + 5?` — fine, single-digit. Ask `What is 4817 + 2956?` and
 errors appear: the operands tokenized into fragments like `[481][7]` and `[295][6]`, so
 the model is pattern-matching over a fragmented, inconsistent representation rather than
-computing — exactly why arithmetic gets a calculator tool. Now measure the multilingual
+computing — exactly why arithmetic gets a calculator tool.
+
+To see *why* this hurts, contrast a default (inconsistent) tokenizer against one that
+forces digit-level tokenization, on three numbers (illustrative token IDs):
+
+| Number | Default tokenization (inconsistent) | Digit-level tokenization (consistent) |
+|---|---|---|
+| `100` | `[100]` → 1 token | `[1][0][0]` → 3 tokens, IDs `[16][15][15]` |
+| `4817` | `[481][7]` → 2 tokens, IDs `[20908][22]` | `[4][8][1][7]` → 4 tokens, IDs `[19][23][16][22]` |
+| `2956` | `[295][6]` → 2 tokens, IDs `[14877][21]` | `[2][9][5][6]` → 4 tokens, IDs `[17][24][20][21]` |
+
+In the default scheme the digit `1` in `100` has no representational relationship to the
+`1` inside `481` — they sit in unrelated multi-digit chunks, and the hundreds place is
+not aligned across numbers. Digit-level tokenization gives every magnitude the *same*,
+*place-aligned* representation (the digit `7` is always token ID `22`), which is exactly
+what makes the structure learnable. Now measure the multilingual
 tax: "I would like to book a table for two people tonight"
 might be ~11 tokens in English but the same request in Hindi or Thai can run 30–50+
 tokens — the non-English user pays several times more for an identical request.
@@ -716,6 +795,23 @@ A RAG app builds prompts as: `[system prompt][tool defs][retrieved docs][user
 question]`. The first three sections are identical across many requests, so they form a
 long cacheable prefix — every request after the first gets a cheap, fast cache hit on
 that prefix and only pays full price for the short, variable user question at the end.
+
+Prefix matching works token-ID by token-ID. Two requests are compared from token #1; the
+cache is reused over the matched run and dies at the first divergence:
+
+```
+ cached request  │ 791 │ 9059 │ 7731 │ 1268 │ 13 │ 5618 │ 2351 │ 318 │ ...
+ new request     │ 791 │ 9059 │ 7731 │ 1268 │ 13 │ 8729 │ 4412 │ 991 │ ...
+                 └──────── matched run ───────┘   ▲
+                  cache REUSED (cheap, fast)      │ first differing token
+                                                  │
+                 ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+                 cache INVALID from here on — every token after the
+                 divergence must be re-prefilled at full price
+```
+
+The match runs in order from the start, so a divergence early in the prompt throws away
+the cache for *everything* downstream of it — which is why variable content goes last.
 Now a developer "improves" the prompt by prepending `Request time: 2026-05-20T14:03:11Z`
 at the very top. That timestamp changes every request, so the very first tokens differ
 every time — the entire prefix, all of it, fails the exact-prefix match, and the cache

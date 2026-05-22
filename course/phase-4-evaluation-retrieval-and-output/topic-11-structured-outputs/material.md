@@ -72,6 +72,14 @@ and will validate yourself, or as a fallback. And note: the model's *attention t
 prompt instructions* still matters — constrained decoding guarantees the *shape*, not the
 *content*; you should describe the schema in the prompt too.
 
+The three mechanisms side by side:
+
+| Mechanism | What it operates on | Guarantees | Does NOT guarantee | When to use |
+|---|---|---|---|---|
+| JSON mode | The decoder, loosely — biases toward valid JSON | Output parses as syntactically valid JSON | Your field names, required keys, value types — schema conformance | You need loose JSON and will validate yourself, or as a fallback |
+| Constrained / strict decoding | The token-sampling step — masks illegal tokens against a compiled grammar/FSM | Output conforms to the schema's *structure* (types, required fields, enums) by construction | Value correctness, semantics, truthfulness | A structured *final answer* — the default for schema-shaped output |
+| Tool-use-for-structure | A tool's argument JSON Schema, with a forced tool call | Schema-shaped tool-call arguments (modern providers also apply strict decoding) | Same as above; also overloads an actions feature for formatting | Genuine agentic flows, or older models/providers lacking native structured outputs |
+
 ### Key terms
 
 - **Structured output** — model output reliably conforming to a machine-readable structure (usually JSON).
@@ -153,6 +161,32 @@ Because an illegal token has −∞ logit, it has zero probability — conforman
 guarantee *by construction*, exactly as 11.1 claimed. (This is also why field *order* is
 fixed and why a `reasoning` field must come first, 11.4: the FSM walks the schema in
 order.)
+
+The three compilation steps are a linear pipeline; the third step runs as a loop, once
+per generated token:
+
+```
+  COMPILE (one-time per schema)
+  ┌─────────────┐  compile   ┌──────────┐  compile   ┌──────────────┐
+  │ JSON Schema │ ─────────► │ Grammar  │ ─────────► │ FSM /        │
+  │ declarative │            │ BNF/EBNF │            │ automaton    │
+  └─────────────┘            └──────────┘            └──────────────┘
+                                                            │
+  DECODE (per-token loop)                                   ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  ┌────────────┐   ┌──────────────────┐   ┌──────────────────┐     │
+  │  │ model emits│──►│ intersect with   │──►│ mask illegal     │     │
+  │  │ logits over│   │ FSM-legal token  │   │ tokens → −∞      │     │
+  │  │ whole vocab│   │ set              │   │                  │     │
+  │  └────────────┘   └──────────────────┘   └──────────────────┘     │
+  │         ▲                                         │               │
+  │         │                                         ▼               │
+  │  ┌──────────────┐                          ┌────────────┐         │
+  │  │ advance FSM  │ ◄────────────────────────│   sample   │         │
+  │  │ to next state│         ↺ repeat         │   token    │         │
+  │  └──────────────┘                          └────────────┘         │
+  └──────────────────────────────────────────────────────────────────┘
+```
 
 **The tokenizer-alignment problem — the genuinely hard part.** Here is the subtlety that
 makes this more than a parsing exercise. The grammar/FSM thinks in **characters** (or
@@ -239,11 +273,53 @@ Constraining the output to `{"in_stock": <boolean>}`.
    value-expecting state. The model's vocabulary contains tokens like `true`, `false`,
    `tru`, `t`, `maybe`, ` "yes"`, `123`. The engine masks everything except tokens that
    are a legal prefix of `true` or `false` — so `maybe`, ` "yes"`, `123` get −∞ logits.
-   Note the **alignment** issue: if the vocabulary has the single token `true` the FSM
-   advances straight to the post-value state; if it only has `t`, `r`, `u`, `e`
-   separately, the FSM must advance one character-state per token. The engine handles
-   both — that reconciliation is precisely the tokenizer-alignment work.
-4. **Result.** Whatever the model "wanted" to say, the only documents it can produce are
+   Visualized as a pass over the vocabulary row in the value-expecting FSM state:
+
+   ```
+   FSM state: value-expecting  (legal continuations: start of `true` or `false`)
+
+   vocab token │  true   false   tru    t    maybe   "yes"   123
+   ────────────┼───────────────────────────────────────────────────
+   FSM-legal?  │   ✓      ✓      ✓     ✓      ✗       ✗       ✗
+   logit       │  kept   kept   kept  kept   −∞      −∞      −∞
+               │  ▲                          ▲
+               │  legal prefix of a           not a prefix of
+               │  schema value                `true`/`false` → unsampleable
+   ```
+
+   The model can only sample from the ✓ tokens; everything else is impossible.
+4. **The tokenizer-alignment trace — one multi-character token across a boundary.**
+   This is the genuinely hard part, so trace it concretely. The grammar/FSM thinks in
+   *characters*; the model emits *tokens*. Consider the very first token. The grammar's
+   `root` rule says the document must begin `{` then optional whitespace then the literal
+   key `"in_stock"`. Three vocabularies handle this differently:
+
+   ```
+   character-level grammar boundary:  {  "  i  n  _  s  t  o  c  k  "  :  ...
+
+   Vocab A — token = `{`           : 1 token spans 1 grammar char.
+                                     FSM: state-0 ─{─► state-1.
+   Vocab B — token = `{"`          : 1 token spans 2 grammar elements
+                                     (the `{` AND the opening quote of the key).
+                                     FSM must advance state-0 ─{─► state-1 ─"─► state-2
+                                     in a SINGLE step — two FSM transitions, one token.
+   Vocab C — token = `{"in_stock":`: 1 token spans the brace, the whole key string,
+                                     the closing quote, AND the colon — the engine
+                                     must walk the FSM through ~12 character-states
+                                     to confirm the entire token is legal end-to-end.
+   ```
+
+   The reconciliation rule: a vocabulary token is allowed only if the *whole* token is a
+   legal walk from the current FSM state (possibly through several states). A token like
+   `{"in_stockX` would be masked — it diverges from the key on the final character even
+   though `{"in_stock` is fine; a token that is *partly* legal and partly not is
+   forbidden. So with Vocab C the single token `{"in_stock":` legally advances the FSM
+   all the way to the value-expecting state of step 3 in one decoding step — the grammar
+   boundary (the colon) falls *inside* the token, and the engine had to verify the token
+   character-by-character against the FSM to permit it. This token-vs-FSM walk, done for
+   *every* one of the ~100k+ vocabulary tokens at *every* step, is the tokenizer-alignment
+   work, and doing it naively is what makes constrained decoding slow.
+5. **Result.** Whatever the model "wanted" to say, the only documents it can produce are
    `{"in_stock": true}` or `{"in_stock": false}` — guaranteed, because every other
    continuation was unsampleable.
 
@@ -317,6 +393,17 @@ contract**. It guarantees the *container* is the right shape; it says nothing ab
 whether the *contents* are correct or sensible. Therefore strict mode does **not remove
 the need for validation** — it removes the *parsing* and *shape* class of errors so your
 validation layer (11.5) can focus on semantics, ranges, and business rules.
+
+The two contracts side by side — what falls on each side of the line:
+
+| Structural contract — GUARANTEED | Semantic contract — NOT guaranteed |
+|---|---|
+| Output parses as valid JSON | Values are *correct* (right number, real name, real date) |
+| Every required field is present | Cross-field invariants (`end_date > start_date`, `sum(items) == total`) |
+| No field outside the schema (`additionalProperties: false`) | String *content* (a `string` "email" can be `"not an email"`) |
+| Each value has the declared type | The *right* enum member is chosen for the input |
+| `enum` values restricted to the allowed set | Truthfulness — a schema-valid object can be fully hallucinated |
+| Arrays/objects nest as the schema specifies | Task success — required fields may be filled with `""`/`0`/`"unknown"` |
 
 ### Key terms
 
@@ -653,6 +740,40 @@ legitimately needs to produce — including "no."** A schema that can only expre
 does not eliminate failure; it just disguises failure as success. Always give the model
 a structurally-valid way out, and have your validation layer (11.5) treat a `refused` /
 `no_answer` status as a real, expected branch — not an error.
+
+The before/after — adding a legal refusal branch turns a disguised failure into an
+honest, branchable outcome:
+
+```
+  BEFORE — schema with no exit path
+  ┌──────────────────────────────────────┐
+  │ schema: {invoice_total, currency,     │   model wants to REFUSE
+  │          due_date}  all required      │           │
+  └──────────────────────────────────────┘           ▼
+                                            FSM has no token path
+                                            to "I can't help"
+                                                      │
+                                            refusal MASKED out
+                                                      │
+                                                      ▼
+                              {invoice_total: 0, currency: "USD",
+                               due_date: "unknown"}  ◄── fabricated,
+                                                         schema-VALID,
+                                                         passes validation ✗
+
+  AFTER — schema with a legal "refused" branch
+  ┌──────────────────────────────────────┐
+  │ schema: {status: enum[ok,refused,     │   model wants to REFUSE
+  │          no_answer], data: {...}|null}│           │
+  └──────────────────────────────────────┘           ▼
+                                            FSM permits status:"refused"
+                                                      │
+                                                      ▼
+                              {status: "refused", data: null}
+                                                      │
+                                            downstream branches on status ✓
+                                            refused → human escalation
+```
 
 ### Key terms
 

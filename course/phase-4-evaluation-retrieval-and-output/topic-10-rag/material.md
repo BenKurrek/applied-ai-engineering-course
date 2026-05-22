@@ -62,6 +62,32 @@ generation step**. The hardest, highest-leverage part is the retrieval — if yo
 the wrong chunks, even a perfect LLM gives a wrong answer. "Garbage in, garbage out"
 applies with full force.
 
+The full pipeline, with each stage annotated by the sub-chapter that covers it — this
+diagram doubles as a topic map for everything that follows:
+
+```
+  INDEXING (offline, one-time / periodic)
+  ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌────────────────────┐
+  │ corpus  │──►│  CHUNK   │──►│  EMBED   │──►│ VECTOR DB / INDEX  │
+  │         │   │ §10.3    │   │ §10.2    │   │ §10.4 (HNSW/IVF)   │
+  └─────────┘   └──────────┘   └──────────┘   └────────────────────┘
+                                                        │
+  ─────────────────────────────────────────────────────┼───────────
+                                                        ▼
+  RETRIEVAL + GENERATION (online, per query)    ┌────────────────┐
+  ┌─────────┐   ┌──────────┐   ┌────────────┐   │   the index    │
+  │  query  │──►│  EMBED   │──►│ ANN SEARCH │◄──┤  (+ BM25 for   │
+  │         │   │ §10.2    │   │ §10.4      │   │   hybrid §10.5)│
+  └─────────┘   └──────────┘   └────────────┘   └────────────────┘
+                                     │
+                                     ▼
+                              ┌────────────┐   ┌──────────────┐
+                              │  RERANK    │──►│ LLM GENERATE │──► answer +
+                              │  §10.6     │   │              │    citations
+                              └────────────┘   └──────────────┘
+  (failure modes §10.7 · agentic loop §10.8 · RAG vs alternatives §10.9)
+```
+
 ### Key terms
 
 - **RAG (Retrieval-Augmented Generation)** — fetching relevant external text at query time and putting it in the prompt so the LLM answers from evidence.
@@ -206,6 +232,24 @@ Three candidate passages, their cosine similarity to the query embedding:
 - *"Our password policy requires 12 characters and rotation every 90 days."* → cosine ≈ 0.55. Shares the word "password" but is about policy, not resetting — moderate.
 - *"The cafeteria menu changes every Monday."* → cosine ≈ 0.04. Unrelated — near orthogonal.
 
+Geometrically, cosine similarity is the cosine of the *angle* between the query vector
+and each passage vector — small angle = high cosine = close meaning:
+
+```
+        ▲
+        │        P1 "change credentials / recovery flow"
+        │       ╱   small angle → cosine ≈ 0.83  (the real answer)
+        │      ╱
+        │     ╱  ┌─ QUERY "how do I reset my password?"
+        │    ╱ ╱
+        │   ╱╱        P2 "password policy: 12 chars, 90 days"
+        │  ╱╱  ╲     wider angle → cosine ≈ 0.55  (shares a word, wrong topic)
+        │ ╱╱     ╲
+        │╱╱        ╲
+   ─────●───────────────────────► P3 "cafeteria menu changes Mondays"
+     origin            ~90° (orthogonal) → cosine ≈ 0.04  (unrelated)
+```
+
 A keyword search would have ranked the policy passage above the actual answer (more
 literal "password" matches). The embedding ranks by meaning and surfaces the right one.
 
@@ -349,6 +393,28 @@ effort — higher = better recall, slower). The single most useful knob to know 
 **`efSearch`: it lets you trade recall against latency at query time without
 rebuilding**.
 
+A search enters at the sparse top layer, takes long coarse hops toward the query, then
+descends layer by layer into progressively denser links for the final precise hop:
+
+```
+              query
+                ┆
+  Layer 2  ●────┆──────────────────●          sparse: long-range links,
+  (top)    │    ┆                  │          fast coarse jumps
+           └────┆─────●            │
+                ┆     │ descend
+  Layer 1  ●────┆●────●────●───────●          denser: medium-range links
+           │    ┆│         │       │
+           └────┆●─────────●       │
+                ┆ │ descend
+  Layer 0  ●─●──┆●─●─●─●─●─●─●─●─●─●           densest: short-range links,
+  (bottom) all vectors live here              precise final neighbors
+                ┆
+            ┄┄┄►● nearest neighbor found
+```
+
+(The dashed line traces the query descending layer to layer to its nearest neighbor.)
+
 **IVF (Inverted File Index)** — a *cluster-based* index. At build time it clusters all
 vectors into `nlist` partitions (centroids, via k-means). At query time it searches only
 the `nprobe` partitions whose centroids are nearest the query, skipping the rest.
@@ -453,6 +519,30 @@ recommendation for production RAG.
   take a weighted sum (`α · dense + (1−α) · sparse`). More tunable but requires
   normalization and choosing `α`, and is sensitive to score-distribution quirks.
 
+RRF takes two independently-ranked lists and fuses them into one by summing each
+document's rank-based scores — using ranks, not raw scores, so the incompatible-scale
+problem disappears:
+
+```
+   DENSE list (semantic)        SPARSE list (BM25 / lexical)
+   rank 1  doc-C                rank 1  doc-A
+   rank 2  doc-A                rank 2  doc-D
+   rank 3  doc-B                rank 3  doc-C
+        │                            │
+        └──────────┬─────────────────┘
+                   ▼
+          ┌──────────────────┐
+          │   RRF FUSE       │   score(doc) = Σ  1/(k + rank)
+          │   k = 60         │   e.g. doc-A: 1/(60+2) + 1/(60+1)
+          └──────────────────┘            = 0.01613 + 0.01639 = 0.03252
+                   │
+                   ▼
+          FUSED list (one ranking)
+          rank 1  doc-A   (high in both lists)
+          rank 2  doc-C
+          rank 3  doc-B / doc-D ...
+```
+
 Many 2026 vector DBs support hybrid search natively in a single query — Weaviate, Milvus,
 Qdrant, Pinecone, and others — so you often don't assemble it by hand. The retrieved,
 fused set is typically then **reranked** (10.6) for final ordering.
@@ -526,6 +616,29 @@ relevance scoring. The price: it cannot be precomputed (the score depends on the
 specific query-document pair), so it runs at query time, and it is far more expensive per
 pair than a vector dot product — which is exactly why you only run it on the ~100
 candidates the cheap first stage already narrowed down to, not the whole corpus.
+
+The two architectures side by side — the key difference is *when* the query and document
+meet:
+
+```
+  BI-ENCODER (first-stage retrieval)      CROSS-ENCODER (reranker)
+
+   query          document                 [ query ⊕ document ]
+     │               │                       (joined as one input)
+     ▼               ▼                              │
+  ┌─────┐         ┌─────┐                           ▼
+  │ Enc │         │ Enc │                     ┌───────────┐
+  └─────┘         └─────┘                     │ joint Enc │  full attention
+     │               │                       │           │  across both
+     ▼               ▼                       └───────────┘
+   vec_q           vec_d                            │
+     │               │                              ▼
+     └──── cosine ────┘                         relevance score
+       cheap vector op                      accurate, but query-time
+                                             ONLY — cannot precompute
+   doc vec is PRECOMPUTABLE
+   (encoded once at index time)
+```
 
 This **two-stage retrieve-then-rerank** pattern is the standard production architecture:
 a cheap, high-**recall** first stage (cast a wide net, don't miss the answer) followed by
@@ -642,6 +755,32 @@ reranking, context length, abstention). This requires **observability**: log the
 retrieved chunks for every query. Evaluate retrieval and generation **separately** with
 their own metrics.
 
+The single most important diagnostic question splits every RAG failure into two classes:
+
+```
+                    ┌─────────────────────┐
+                    │  Wrong answer?      │
+                    └─────────┬───────────┘
+                              │
+                              ▼
+            ┌─────────────────────────────────────┐
+            │ Was the right chunk IN the context?  │
+            │ (log the retrieved chunks to check)  │
+            └───────────┬─────────────┬────────────┘
+                        │             │
+                   NO ◄─┘             └─► YES
+                        │             │
+                        ▼             ▼
+            ┌───────────────────┐  ┌────────────────────┐
+            │ RETRIEVAL FAILURE │  │ GENERATION FAILURE │
+            │ fix: chunking,    │  │ fix: prompt to     │
+            │ embeddings,       │  │ prefer context,    │
+            │ hybrid, recall,   │  │ reranking, shorten │
+            │ metadata filters  │  │ /reorder context,  │
+            │                   │  │ citations          │
+            └───────────────────┘  └────────────────────┘
+```
+
 **Retrieval metrics — what they measure and when to use each.** All assume you have, per
 query, a labeled set of which chunks are actually relevant.
 
@@ -668,6 +807,15 @@ query, a labeled set of which chunks are actually relevant.
 
 In short: recall@k = did we get it; precision@k = is the set clean; MRR = is the one
 right answer near the top; NDCG = are the several relevant results ordered well.
+
+The four retrieval metrics side by side:
+
+| Metric | Question it answers | Cares about rank order? | Use when |
+|---|---|---|---|
+| recall@k | Did we *find* the relevant chunks at all (in the top-k)? | No — only presence in the top-k | Tuning the cheap high-recall first stage; making sure the answer isn't missed |
+| precision@k | Of the top-k retrieved, what fraction are relevant? | No — only the fraction relevant | Checking the context is clean, not padded with distractors |
+| MRR | How high is the *first* relevant result? | Yes — but only the first hit | Queries with essentially one right answer; want it near the top |
+| NDCG | Are *more* and *more-relevant* chunks placed *higher*? | Yes — full ordering, with graded relevance | Multi-relevant retrieval; evaluating rerankers |
 
 For **generation**, use faithfulness, answer relevance, and correctness — measured with
 an LLM judge or a framework like RAGAS, which provides reference-free metrics such as
@@ -883,6 +1031,14 @@ corpus) directly into a model with a large context window.
 - *"I need the model to know our 50,000 support articles and stay current"* → **RAG**,
   not fine-tuning (a near-universal interview trap — fine-tuning is the wrong tool for
   bulk dynamic knowledge).
+
+The three approaches side by side:
+
+| Approach | Supplies knowledge or changes behavior? | Best for | Key strength | Key weakness | Citations? |
+|---|---|---|---|---|---|
+| RAG | Supplies knowledge | Large, changing, private, access-controlled corpora needing verifiability | Instant updates, auditable/editable sources, per-token cost efficiency | Retrieval can miss; pipeline complexity; retrieval latency; teaches no skills | Yes |
+| Long-context | Supplies knowledge | A corpus small enough to fit; whole-document holistic reasoning | Dead simple — no pipeline; no retrieval miss; cross-document synthesis | Hard window limit; expensive per token; slower TTFT; "lost in the middle" | No |
+| Fine-tuning | Changes behavior | Consistent format, tone, style, or a specialized skill | Changes how the model behaves; can shrink prompts | Unreliable for facts; knowledge frozen at fine-tune time; needs training pipeline; redo on base-model update | No |
 
 **They are not mutually exclusive — combine them.** A common production stack:
 fine-tune for the domain's tone and output format + RAG for current factual grounding +

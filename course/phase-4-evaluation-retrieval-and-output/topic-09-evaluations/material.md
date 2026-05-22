@@ -58,6 +58,39 @@ development**.
 A useful mental model: offline eval answers "did I break anything I already know
 about?"; online eval answers "what is happening that I don't know about?"
 
+This closed cycle — the heart of eval-driven development — is what keeps the eval set
+and the system improving together:
+
+```
+                  ┌──────────────────────────────────────────┐
+                  │           GOLDEN DATASET                  │
+                  │   curated inputs + references/rubrics      │
+                  └──────────────────────────────────────────┘
+                       │                          ▲
+                       ▼                          │
+              ┌─────────────────┐                 │ new failure
+              │  OFFLINE EVAL   │                 │ becomes a
+              │  (the GATE)     │                 │ permanent
+              │  run in CI      │                 │ regression row
+              └─────────────────┘                 │
+                       │                          │
+              pass ────┤                 ┌──────────────────┐
+              fail ──► block, fix        │ HARVEST FAILURES │
+                       │                 │ thumbs-down,     │
+                       ▼                 │ edits, escalations│
+              ┌─────────────────┐        └──────────────────┘
+              │ DEPLOY / CANARY │                 ▲
+              │  ship to a slice│                 │
+              └─────────────────┘                 │
+                       │                          │
+                       ▼                          │
+              ┌─────────────────┐                 │
+              │   ONLINE EVAL   │ ────────────────►┘
+              │ real traffic,   │
+              │ real users      │
+              └─────────────────┘
+```
+
 ### Key terms
 
 - **Evaluation (eval)** — a repeatable, scored measurement of LLM system quality on a task.
@@ -313,6 +346,17 @@ real systems use a **layered** approach: cheap deterministic checks first (did i
 valid JSON? is the disclaimer present? is it under the length cap?), then expensive
 judge-based checks for the nuanced quality dimensions.
 
+The whole metric family side by side — match the metric to the task:
+
+| Metric | Needs a reference? | What it measures | Best for | Key weakness |
+|---|---|---|---|---|
+| Exact match | Yes | String equality after normalization | Closed-form answers with one canonical surface form (categories, MCQ letters, booleans) | Fails any correct answer in a different surface form |
+| F1 / token overlap | Yes | Token-set precision/recall overlap | Extractive QA / answer spans (partial credit) | Rewards lexical overlap, not meaning; paraphrase scores low, word-salad scores high |
+| pass@k | No (needs a verifiable check) | Whether ≥1 of k samples passes a test/verifier | Verifiable code or math | High k masks an unreliable model; report pass@1 too |
+| BLEU / ROUGE | Yes | Shared n-gram counts (surface form) | Translation, tightly-constrained summarization (legacy) | Sees only surface form; correlates poorly with human judgment on free-form text |
+| BERTScore | Yes | Contextual-embedding similarity of tokens | A fast semantic screen when references exist | Measures similarity to the reference, not correctness; still needs a reference |
+| LLM-as-judge | No | Nuanced quality against criteria/rubric | Open-ended, reference-free quality grading | Noisy, biased, must be calibrated; cost and latency |
+
 ### Key terms
 
 - **Metric** — a function mapping an output (and reference) to a score.
@@ -402,6 +446,28 @@ Ask for a brief rationale first, then the score/choice (chain-of-thought). This 
 quality and — critically — gives you something to audit when the judge is wrong.
 Pairwise also requires a specific bias mitigation (position bias, see 9.8): swap A and B
 and run twice.
+
+The two modes side by side — note pairwise runs the judge twice with positions swapped:
+
+```
+  POINTWISE (single-output scoring)      PAIRWISE (comparison)
+
+   input + output                         input + {output A, output B}
+        │                                      │
+        ▼                                      ▼
+   ┌─────────┐                            ┌─────────┐  A first
+   │  JUDGE  │                            │  JUDGE  │ ──────────► winner₁
+   └─────────┘                            └─────────┘
+        │                                      │
+        ▼                                 ┌─────────┐  B first (swap)
+   score 1–5                              │  JUDGE  │ ──────────► winner₂
+   (absolute,                             └─────────┘
+    poorly calibrated)                         │
+                                               ▼
+                                        winner₁ == winner₂ ?
+                                          yes → genuine win
+                                          no  → position bias → tie
+```
 
 ### Key terms
 
@@ -561,6 +627,23 @@ judge for the routine CI run, full panel for the release-gate decision.
 The judge-disagreement rate is itself a useful signal: high disagreement means the task
 is genuinely ambiguous or your rubric is underspecified — fix the rubric.
 
+A panel fans one output out to several diverse judges, then aggregates their verdicts:
+
+```
+                              ┌───────────────────┐
+                         ┌───►│ JUDGE 1 (Claude)  │───┐  verdict₁
+                         │    └───────────────────┘   │
+                         │    ┌───────────────────┐   │
+   one output ───────────┼───►│ JUDGE 2 (GPT)     │───┼──►┌────────────┐
+   (+ input, rubric)     │    └───────────────────┘   │   │ AGGREGATE  │──► final
+                         │    ┌───────────────────┐   │   │ majority / │   verdict
+                         └───►│ JUDGE 3 (Gemini)  │───┘   │ median /   │
+                              └───────────────────┘       │ unanimity  │
+                                                          └────────────┘
+            diverse families → independent errors          split → flag
+                                                            for human review
+```
+
 ### Key terms
 
 - **Judge ensemble / panel / jury** — multiple judge models evaluating the same output.
@@ -589,9 +672,22 @@ positions swapped. Aggregation: majority vote per case; ties and 2–1 splits fl
 - 2–1 splits on 45 cases — reviewed; the rubric is sharpened on a recurring ambiguity.
 - 15 ties — genuinely close.
 
-Net win rate is computed only from the agreed cases plus reconciled splits. The panel
-both removed the self-preference risk and surfaced a rubric gap a single judge would
-have hidden.
+**Computing the win rate explicitly.** A per-case verdict is decided by majority vote,
+so the 200 cases resolve as: 140 unanimous + 45 reconciled splits = 185 *decisive*
+comparisons, plus 15 ties. Suppose the verdicts break down so the Claude-based candidate
+takes 117 of the 185 decisive cases and the GPT-based candidate takes 68. Ties are
+excluded from the denominator (they decide nothing). The win rate is then:
+
+```
+  win rate = wins / decisive comparisons
+           = 117 / (117 + 68)
+           = 117 / 185
+           ≈ 0.632   →   63%
+```
+
+So the Claude-based candidate wins **≈ 63%** of decisive comparisons — a clear,
+defensible margin over a coin-flip (50%) across 185 cases. The panel both removed the
+self-preference risk and surfaced a rubric gap a single judge would have hidden.
 
 ### Check questions
 
@@ -712,6 +808,17 @@ Rough interpretation of kappa (the widely-cited Landis & Koch scale): < 0.2 slig
 0.2–0.4 fair, 0.4–0.6 moderate, 0.6–0.8 substantial, > 0.8 almost perfect (use as a
 guide, not gospel; these thresholds are arbitrary conventions and vary by field). [2]
 κ around 0 means agreement is no better than chance — your "ground truth" is random.
+
+The Landis & Koch scale as a lookup table:
+
+| Kappa (κ) range | Agreement level |
+|---|---|
+| < 0.00 | Poor (worse than chance) |
+| 0.00 – 0.20 | Slight |
+| 0.21 – 0.40 | Fair |
+| 0.41 – 0.60 | Moderate |
+| 0.61 – 0.80 | Substantial |
+| 0.81 – 1.00 | Almost perfect |
 
 **What low agreement means and how to fix it.** Low IAA is usually not bad annotators —
 it is a **bad rubric**. Mitigations: write detailed annotation guidelines with examples;

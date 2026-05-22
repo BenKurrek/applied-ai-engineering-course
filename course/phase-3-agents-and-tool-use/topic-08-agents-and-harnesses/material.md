@@ -98,6 +98,20 @@ Task: "Investigate why the nightly build is failing and fix it." → agent. The 
 read logs, decide which file to inspect, run tests, interpret failures, and iterate. The
 number and order of steps is unknowable in advance and depends entirely on what it finds.
 
+The three structures contrasted across the properties that matter when you choose one:
+
+| Property | Single LLM call | Workflow | Agent |
+|---|---|---|---|
+| Who decides control flow | n/a — one shot | The developer, in advance (fixed code paths) | The model, at each step, from what it observed |
+| Loop? | No | No — fixed sequence/branches | Yes — repeats until a termination condition |
+| Tools? | Optional, one call | Optional, at developer-chosen steps | Yes — and results are fed back in |
+| Cost predictability | High — one bounded call | High — fixed number of calls | Low — variable step count; ~quadratic in steps (8.12) |
+| Failure modes | Wrong/incomplete output | Wrong output; a brittle branch | Loops, context overflow, error cascades, goal drift (8.8) |
+| Reproducibility | Low-variance (not deterministic, 3.7) | Low-variance per step | Low — many sampled steps + live tool results; trajectories rarely repeat |
+
+The table is the case for "don't build an agent when a workflow will do": you trade the
+predictability of the first two columns for the flexibility of the third.
+
 ### Check questions
 
 1. A pipeline calls model A to classify a ticket, then routes to one of three pre-written model-B prompts based on the class, then returns. It uses tools and runs the model twice. Is it an agent? Justify using the decisive criterion. — **Answer:** No — it is a workflow. Using tools and running the model more than once is not sufficient; the decisive criterion is *who decides the control flow*. Here the developer hardcoded the path (classify → fixed branch → return); the model never decides what to do next. An agent requires model-driven control over each next step, not just a multi-step pipeline.
@@ -184,6 +198,41 @@ Three iterations, each one informed by the previous observation. The second sear
 *depended* on the first observation — which is exactly why it could not have been a
 single planned-ahead call.
 
+The same loop as a cycle, with its two exits:
+
+```
+                 ┌─────────────────────────────┐
+                 │                             │
+                 ▼                             │
+            ┌─────────┐                        │
+            │  THINK  │  model reasons over     │
+            │         │  the current context   │
+            └────┬────┘                        │
+                 │                             │
+        end_turn?├──── yes ──▶  EXIT  (final answer)
+                 │                             │
+        budget   ├──── trips ─▶  EXIT  (stopped: limit, 8.9)
+        limit?   │                             │
+                 │ no                          │
+                 ▼                             │
+            ┌─────────┐                        │
+            │   ACT   │  emit tool_use;         │
+            │         │  harness runs the tool  │
+            └────┬────┘                        │
+                 │                             │
+                 ▼                             │
+            ┌─────────┐                        │
+            │ OBSERVE │  tool_result appended   │
+            │         │  to context             │
+            └────┬────┘                        │
+                 │                             │
+                 └──────── loop back ──────────┘
+                  (context grew by one cycle)
+```
+
+The loop only ends two ways: the model stops requesting tools (`stop_reason == end_turn`)
+or a harness budget limit trips. Neither exit, on its own, means the task is correct.
+
 ### Check questions
 
 1. Someone proposes an "optimization": have the model produce the full sequence of tool calls in one shot, then have the harness execute them all, skipping the per-step model calls. Which phase of the agentic loop does this delete, and what capability is lost? — **Answer:** It deletes the **Observe** phase (and the re-Think that follows it). The agent can no longer see the result of one action before choosing the next, so it cannot adapt to surprises, recover from errors, or handle a task whose later steps depend on earlier results. The loop's whole value is the feedback — it is a feedback loop, not a pre-planned script.
@@ -264,6 +313,25 @@ With ReAct: **Thought:** "I cannot know current weather; I must look it up." →
 **Action:** `get_weather("Denver")` → **Observation:** "2°C, snowing." → **Thought:** "I
 have the real value." → **Answer:** "2°C and snowing." The action grounded the reasoning
 and corrected a confident-but-wrong guess.
+
+The grounding feedback path drawn explicitly — the Observation is not an endpoint, it
+*feeds the next Thought*:
+
+```
+   ┌─────────┐      ┌─────────┐      ┌──────────┐      ┌─────────────┐
+   │ Thought │ ───▶ │ Action  │ ───▶ │  [tool]  │ ───▶ │ Observation │
+   │ reason  │      │ tool    │      │ executes │      │ real fact   │
+   │ next    │      │ call    │      │          │      │ comes back  │
+   └─────────┘      └─────────┘      └──────────┘      └──────┬──────┘
+        ▲                                                     │
+        │                grounds next                         │
+        └─────────────────────────────────────────────────────┘
+```
+
+Each Observation injects a real external fact back into the next Thought — that back-arrow
+is what corrects reasoning when it drifts from reality. Remove it (reason-only) and the
+model can confidently hallucinate; remove the Thought (act-only) and it fumbles tool
+selection.
 
 ### Check questions
 
@@ -385,6 +453,37 @@ a *concise summary* of its product. The orchestrator's context only ever holds t
 summaries — not the raw research — and the synthesis step works on clean input. Context
 isolation directly improves output quality.
 
+The two ways multiple agents can be arranged — a tree that fans out and merges, versus a
+chain that passes a baton (full treatment in 8.7):
+
+```
+   ORCHESTRATOR / WORKER  (tree)        HANDOFF  (sequential chain)
+
+         ┌──────────────┐                 ┌─────────┐
+         │ ORCHESTRATOR │                 │  Triage │
+         └──┬────┬────┬──┘                 │  agent  │
+            │    │    │                    └────┬────┘
+       delegate  │    delegate                  │ hand off (baton)
+            │    │    │                         ▼
+            ▼    ▼    ▼                     ┌─────────┐
+        ┌──────┐┌──────┐┌──────┐            │ Billing │
+        │Worker││Worker││Worker│            │  agent  │
+        │  A   ││  B   ││  C   │            └────┬────┘
+        └──┬───┘└──┬───┘└──┬───┘                 │ hand off
+           │       │       │                     ▼
+        report  report  report               ┌─────────┐
+           └───────┼───────┘                  │Technical│
+                   ▼                          │  agent  │
+            ┌──────────────┐                  └─────────┘
+            │  SYNTHESIZE  │
+            └──────────────┘            one agent active at a time;
+       workers run in parallel,         control is transferred, not
+       results merged at the top        delegated-and-reported-up
+```
+
+The tell: orchestrator/worker *delegates and integrates* (workers report up); handoff
+*transfers control* (the baton moves down the line).
+
 ### Check questions
 
 1. A team ships an agent that produces a full step-by-step plan and then executes it exactly, never revising. On unpredictable tasks it frequently fails partway through. Diagnose the planning choice and prescribe the fix, naming the trade-off they were trying to get and the one they sacrificed. — **Answer:** They chose pure upfront (plan-then-execute) planning. Its benefit is structure and a reviewable plan; its cost is brittleness — plans rarely survive contact with reality, and following one blindly handles surprises badly. Fix: keep a rough upfront plan for direction but execute interleaved, *re-planning when reality diverges* (a maintained todo list is the common concrete pattern). They wanted legibility/structure and sacrificed adaptivity; the combination recovers both.
@@ -462,6 +561,30 @@ context. At the end of the conversation, the harness writes a one-paragraph summ
 **long-term memory write**. Next week, when the same user returns, that summary is
 retrieved into the new conversation's context, giving continuity without keeping the
 entire old transcript around.
+
+The two stores and the two paths between them — this is the RAM-vs-disk analogy made
+concrete:
+
+```
+   SHORT-TERM MEMORY                       LONG-TERM MEMORY
+   ┌───────────────────────┐               ┌───────────────────────┐
+   │   Context window      │               │   External store      │
+   │  (the agent's RAM)    │               │  (the agent's disk)    │
+   │                       │ ◀── retrieve ──┤                       │
+   │  • system prompt      │   read a slice │  DB / vector store /   │
+   │  • goal               │   into context │  files / knowledge    │
+   │  • thoughts/actions/  │                │  base                 │
+   │    observations       ├── write ─────▶ │                       │
+   │                       │  persist what  │  durable, unbounded,  │
+   │  volatile, bounded,   │  is worth      │  but INVISIBLE until   │
+   │  re-sent every call   │  keeping       │  retrieved             │
+   └───────────────────────┘               └───────────────────────┘
+        immediately available                  cheap to keep, but
+        but costly + crowds window              you must read it in
+```
+
+`retrieve` is the only way long-term memory affects the model — a fact sitting in the
+store the agent never retrieved is, to the agent, as if it does not exist.
 
 ### Check questions
 
@@ -633,6 +756,20 @@ coupled — every change depends on the current state of every other file. Split
 across agents that don't share context produces inconsistent changes and broken tests. A
 single agent with file and test tools is simpler and more reliable here.
 
+The decision at a glance — when multi-agent earns its cost and when it just adds failure
+modes:
+
+| When multi-agent **helps** | When multi-agent **hurts** |
+|---|---|
+| Subtasks are separable with clean interfaces | Subtasks are tightly coupled, constantly needing each other's state |
+| Each subtask generates bulk intermediate context the parent doesn't need | Subtasks share little context but must stay mutually consistent |
+| Independent subtasks can run in parallel (wall-clock win) | Work is inherently sequential — no parallelism to gain |
+| Specialized roles (focused prompt + minimal tools) raise reliability | One coherent task split arbitrarily — coordination overhead, error cascades |
+| **Use it when:** the task decomposes into independent units with narrow, well-defined hand-off points | **Avoid it when:** a single well-designed agent with good tools would do — which is *most* tasks |
+
+The honest default is the bottom-right cell: reach for multi-agent only when the
+top-left conditions genuinely hold.
+
 ### Check questions
 
 1. For each system, name the multi-agent topology and justify: (a) a customer-support flow that moves a chat from a triage agent to a billing specialist; (b) a system where a lead agent fans out five research tasks at once and merges the results. — **Answer:** (a) is a **handoff** topology — control passes sequentially from one specialized agent to another, one active at a time, the "baton" moving down the line. (b) is **orchestrator/worker** — hierarchical: a lead decomposes the task, delegates to parallel worker subagents with focused contexts, and integrates their results. The tell is whether control is *transferred* (handoff) or *delegated-and-reported-up* (orchestrator/worker).
@@ -713,6 +850,19 @@ Defenses that would have caught it: a 15-step budget cap (8.9); loop detection o
 identical edits; periodic goal re-statement; and the tool returning an *actionable* error
 ("test fails due to missing env var DB_URL — this is an environment issue, not a code
 bug") so the model recognizes the situation and stops or asks for help.
+
+The five failure modes as a catalog — mechanism and primary defense for each:
+
+| Failure mode | Mechanism | Defense |
+|---|---|---|
+| Infinite / unproductive loop | Agent repeats an action or oscillates without progress — re-running a failing tool, re-searching the same query | Hard step/iteration limits (8.9); loop detection on repeated identical actions; actionable tool errors so the model can change tack |
+| Context overflow | The think-act-observe loop grows context every step; it exceeds the window, or silently degrades before the limit (lost in the middle, 4.4) | Context management (8.6) — compaction, eviction, retrieval-on-demand; subagent isolation (8.4); monitor window utilization |
+| Error cascade | An early mistake becomes an input to later steps, which build on it, compounding the error | Verify intermediate results before building on them; ground claims in observations; checkpoints; keep trajectories short enough to inspect |
+| Goal drift | Over a long run the agent loses sight of the objective — pulled by a subproblem, an injection, or the goal scrolling out of salience | Periodically re-state the goal (recency, 5.6); a maintained todo list it re-reads; checkpoints comparing progress to the goal |
+| Tool misuse | Wrong tool, wrong arguments, calling a tool when it shouldn't (or failing to) — usually a description or tool-set problem | Better tool descriptions (7.7); fewer/clearer tools (least privilege); schema validation |
+
+Remember the cross-cutting truth above the table: these modes **interact and compound** —
+overflow causes drift causes loops — so defenses must be applied together, not singly.
 
 ### Check questions
 
@@ -1073,6 +1223,46 @@ agent is "buggy." The bug is the cost model. Fixes: re-estimate the budget from 
 compaction (8.13) so `c·n` stops growing without bound past, say, step 25 — which bends
 the back half of the run from quadratic toward linear.
 
+**Why it is "triangular."** Each row below is one step's billed input; each ■ is one
+step's worth of content (`c` tokens) that is *re-sent* on that step. Step 1's content is
+re-sent on every later step, step 2's on every step after it, and so on:
+
+```
+   step   re-sent trajectory content      blocks
+   ────   ───────────────────────────     ──────
+    1     ·                                 0
+    2     ■                                 1
+    3     ■ ■                               2
+    4     ■ ■ ■                             3
+    5     ■ ■ ■ ■                           4
+    6     ■ ■ ■ ■ ■                         5
+    ⋮                                        ⋮
+    N     ■ ■ ■ ■ ■ … ■  (N−1 wide)        N−1
+          └──────────────────┘
+          this is a TRIANGLE of ■ blocks
+   total ■ ≈ 0+1+2+…+(N−1) = N(N−1)/2 ≈ N²/2
+```
+
+Caption: the trajectory's own content is billed **≈ N²/2** times its size — the area of
+the triangle. That is the quadratic term `c·N(N−1)/2`; a "30× a single call" estimate
+counts only the diagonal edge, not the filled triangle.
+
+**3-E2 — the same agent with fewer steps.** The triangle area is what makes step count
+the dominant lever. Take the worked example's research agent (`P = 3,000`, `c = 1,200`)
+and suppose better tools and planning bring it from **40 steps to 20**:
+
+| | 40 steps | 20 steps |
+|---|---|---|
+| Linear term `N·P` | `40·3,000 = 120,000` | `20·3,000 = 60,000` |
+| Quadratic term `c·N(N−1)/2` | `1,200·40·39/2 = 936,000` | `1,200·20·19/2 = 228,000` |
+| **Total input tokens** | **1,056,000** | **288,000** |
+
+Halving the steps cut total cost to **~27%** — the run is **~3.7× cheaper**. The quadratic
+term alone fell from 936,000 to 228,000, a drop to **~24%** of its value: that is the
+"halving steps roughly quarters the cost" claim, shown numerically. Note that *trimming
+per-step tokens* `c` by even 20% would only shave ~20% off the quadratic term — reducing
+`N` wins decisively because the term goes as `N²`.
+
 ### Check questions
 
 1. A teammate says "our agent does 20 steps; a single call costs $0.01, so budget about $0.20 per run." Explain precisely why this under-estimates the true cost, and write the expression they should have used. — **Answer:** The estimate counts each step's tokens exactly once. But the API is stateless, so every step re-sends the *entire conversation so far* — step 1's tokens are billed again in steps 2…20, step 2's in 3…20, and so on. The trajectory content is billed *triangularly*, ~quadratically in the step count. The correct shape for total input tokens is `N·P + c·N(N−1)/2`, where `P` is the fixed prefix (system prompt + tools + goal) and `c` is the tokens added per step. The `c·N(N−1)/2` term is quadratic and is exactly what the naive ×N estimate omits.
@@ -1172,6 +1362,29 @@ the assistant message [4] holding `tool_use(t2)` but, if done sloppily by a flat
 window, can leave message [5]'s `tool_result(t2)` — an **orphaned tool_result**, request
 rejected. Even dropping [2]–[5] cleanly throws away that *pair B found a CVE* — a
 load-bearing finding.
+
+Exactly how a flat-window cut produces the orphan:
+
+```
+   BEFORE compaction                  flat window cuts here
+   ┌──────────────────────────────┐         │
+   │ [4] assistant: tool_use(t2)  │  ◀──── cut deletes this
+   ├──────────────────────────────┤         │
+   │ [5] user: tool_result(t2)    │  ◀──── but KEEPS this
+   └──────────────────────────────┘         │
+
+   AFTER compaction  →  request sent to API
+   ┌──────────────────────────────┐
+   │ [5] user: tool_result(t2) ───┼──▶  tool_use_id "t2"
+   └──────────────────────────────┘      ✗ no preceding tool_use!
+                                          ORPHAN  →  API rejects
+                                          the request as malformed
+```
+
+The `tool_result` for `t2` now references a `tool_use` block that no longer exists in the
+messages array. The API requires every `tool_result` to have a matching preceding
+`tool_use` — so the next call fails outright. The fix is the atomic-unit rule: a
+`tool_use` and its `tool_result` are removed or kept *together*, never split.
 
 **Right way.** Keep the prefix `[0],[1]` verbatim. Keep the recent turns `[8],[9]`
 verbatim (the model is mid-step on axios). Compact the **contiguous middle** — the whole
@@ -1315,6 +1528,34 @@ seeded at step 7 and worsened by a lossy compaction at step 11. None of that is 
 in a flat log; the span tree makes the failure's *origin and propagation* explicit. The
 per-span `cost_usd` totals also show step 7–18 burned 70% of the run's cost re-sending a
 trajectory built on the bad result — the 8.12 curve, made visible.
+
+That run as a span tree — each node a span, nested by `parent_span_id`:
+
+```
+trace trc_9f2a  (final_status: "success" ← wrongly; 18 spans)
+│
+├─ llm span        step 6   model_call      stop_reason: tool_use
+│  └─ tool span    step 6   run_tests       status: error  ◀── CASCADE ORIGIN
+│                                           (tests failed here)
+├─ llm span        step 7   model_call      misreads the failure ✗
+│  └─ tool span    step 7   edit_file       (fixing the wrong thing)
+├─ llm span        step 8   model_call
+│  └─ tool span    step 8   edit_file
+│  ⋮
+├─ compaction span step 11  tokens 48k→12k  summary dropped the
+│                                           failing-test detail (lossy)
+│  ⋮
+├─ llm span        step 12  model_call      now fully off-track
+│  └─ tool span    step 12  edit_file
+│  ⋮
+└─ llm span        step 18  model_call      stop_reason: end_turn
+                                            (wrong answer returned)
+```
+
+The tree marks the **cascade-origin span** (the failed `run_tests` at step 6) and shows
+every later span hanging off a trajectory built on it. A flat log gives you 4,000
+interleaved lines; the span tree gives you the failure's origin, its propagation, and the
+lossy compaction that sealed it — at a glance.
 
 ### Check questions
 

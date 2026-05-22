@@ -65,6 +65,17 @@ is not standardized**: Anthropic's Messages API accepts `temperature` in the ran
 Anthropic's API but the *midpoint* on OpenAI's, so the same number does not denote the
 same behavior across providers — always check the specific API's documented range.
 
+The full sampling-knob landscape across the two major providers (a snapshot — confirm
+against current docs; the knobs for 3.2 and 3.4 are previewed here):
+
+| Knob | Anthropic Messages API | OpenAI API |
+|---|---|---|
+| `temperature` range | 0.0–1.0 (1.0 is the max) | 0.0–2.0 (1.0 is the midpoint) |
+| `top_p` | Exposed; advanced-use; cannot set with `temperature` in the same request | Exposed; may set alongside `temperature` (but altering one is advised) |
+| `top_k` | Exposed; advanced-use | Not exposed |
+| Frequency / presence penalties | Not exposed | Both exposed, range −2.0 to 2.0 |
+| `seed` | Not exposed | Exposed (best-effort determinism; `system_fingerprint` reports backend) |
+
 ### Key terms
 
 - **Temperature (T)** — a scalar that divides every logit before softmax, controlling
@@ -96,7 +107,28 @@ A step has logits `cat` 5.0, `dog` 3.0, `bird` 1.0. At **T = 1**, softmax gives 
 doubles before softmax (10.0, 6.0, 2.0) → roughly `cat` 0.98, `dog` 0.02, `bird` ~0 —
 much sharper, `cat` nearly certain. At **T = 2.0**, every logit halves (2.5, 1.5, 0.5) →
 roughly `cat` 0.63, `dog` 0.23, `bird` 0.09 — much flatter, `dog` and `bird` now have
-real chances. Same three logits, three different distributions — and three different
+real chances.
+
+The same three tokens, three temperatures — watch the distribution go from sharp to flat:
+
+```
+ T = 0.5  (sharp — high contrast)
+   cat   │███████████████████████████████████████████████ 0.98
+   dog   │█                                               0.02
+   bird  │                                                ~0
+
+ T = 1.0  (native distribution)
+   cat   │██████████████████████████████████████████      0.84
+   dog   │█████                                           0.11
+   bird  │█                                               0.02
+
+ T = 2.0  (flat — low contrast)
+   cat   │███████████████████████████████                 0.63
+   dog   │███████████                                     0.23
+   bird  │████                                            0.09
+```
+
+Same three logits, three different distributions — and three different
 behaviors when you sample.
 
 ### Check questions
@@ -209,13 +241,43 @@ another.
 
 ### Worked example
 
+The full sampling pipeline at each generation step, with the knob that controls each
+stage labeled underneath:
+
+```
+  logits ──►[ ÷ T ]──► scaled ──►[ softmax ]──► probs ──►[ top-k / top-p ]──► nucleus ──►[ draw ]──► token
+   raw       │          logits        │         full         │            truncated      │
+   scores    │                        │         dist.        │            dist.          │
+             ▼                        ▼                       ▼                           ▼
+        temperature              (no knob —              k  or  p                  (random sample,
+        knob (3.1)                fixed function)        knobs (3.2)                or greedy = argmax)
+```
+
 At one step, after temperature and softmax, the distribution is `the` 0.50, `a` 0.25,
 `an` 0.13, `this` 0.07, then a long tail of ~0.05 spread over hundreds of tokens. With
 **top-k = 2**: keep `the` and `a`, drop everything else, renormalize → `the` 0.67, `a`
 0.33; `an` and `this` are now impossible even though they were perfectly reasonable.
 With **top-p = 0.9**: accumulate `the` (0.50) + `a` (0.75) + `an` (0.88) + `this`
 (0.95) — crossing 0.9 at `this` — so the nucleus is those four tokens; the long junk
-tail is dropped. Now consider a *confident* step: `Paris` 0.97, tail 0.03. top-p = 0.9
+tail is dropped.
+
+The two truncation rules drawn against the same sorted distribution — top-k cuts at a
+fixed *count*, top-p cuts where the *cumulative* probability crosses the threshold:
+
+```
+  token  prob   bar                          cumulative
+  the    0.50   │█████████████████████        0.50
+  a      0.25   │██████████                   0.75
+  ───────────────────────────────  ◄── top-k = 2 cutoff (fixed count)
+  an     0.13   │█████                        0.88
+  this   0.07   │███                          0.95
+  ───────────────────────────────  ◄── top-p = 0.9 cutoff (cumulative ≥ 0.90)
+  …tail  0.05   │██  (hundreds of tokens, each ~0.0001)
+```
+
+top-k = 2 stops after two tokens regardless of shape; top-p = 0.9 keeps going until the
+running sum reaches 0.90 — here that is four tokens. On a more confident step the top-p
+cutoff would land much earlier; the count is *adaptive*. Now consider a *confident* step: `Paris` 0.97, tail 0.03. top-p = 0.9
 keeps only `Paris` (its 0.97 alone exceeds 0.9), correctly admitting nothing else —
 whereas top-k = 40 would still admit 39 tail tokens. That adaptivity is top-p's
 advantage.
@@ -318,6 +380,14 @@ you get the single most probable continuation every time — perhaps a safe, gen
 some great, some weak — exactly the variety you want for ideation. (Beam search would do
 worse still: searching for the highest-total-probability tagline lands on the blandest
 phrasing of all — the concrete reason it fell out of favor for open-ended LLM work.)
+
+The three decoding strategies compared:
+
+| Strategy | Deterministic? | How it picks | Good for | Why rarely used |
+|---|---|---|---|---|
+| Greedy | Yes (modulo 3.7 caveats) | Single highest-probability token, every step | Correct-answer tasks: classification, extraction, structured output, evals | — (widely used where reproducibility matters) |
+| Sampling | No | Random draw from the truncated, temperature-scaled distribution | Open-ended generation: writing, brainstorming, varied copy | — (the standard for open-ended generation) |
+| Beam search | Yes | Keeps b best *partial sequences*, extends them, returns highest-*total*-probability one | Older machine translation (one correct output) | Mode-seeking objective yields bland, generic text; expensive; clashes with sampling |
 
 ### Check questions
 
@@ -427,6 +497,14 @@ document," "it") win, breaking the loop. But push the frequency penalty too high
 summary becomes painful: the model refuses to reuse "report" even when it is the only
 correct word, twisting into vague paraphrases. The skill is using the smallest penalty
 that breaks the loop.
+
+The three repetition controls compared:
+
+| Penalty | Flat or scaled? | Additive or multiplicative? | Best for |
+|---|---|---|---|
+| Presence | Flat — one-time, applied once a token has appeared at all | Additive (subtracted from the logit) | Gently encouraging *new* tokens/topics |
+| Frequency | Scaled — grows with the number of prior occurrences | Additive (subtracted from the logit) | Breaking a runaway loop on one *specific* over-used token |
+| Repetition | Flat (applied to any already-seen token) | Multiplicative (divides the logit by a factor) | Same goal in open-source inference stacks (Hugging Face); not in the OpenAI/Anthropic core APIs |
 
 ### Check questions
 
@@ -543,6 +621,18 @@ logprob -1.90 (prob ≈ 0.15), `positive` logprob -2.81 (prob ≈ 0.06). You now
 Set a policy — e.g., if the top class is below 0.6, route to human review. Contrast a
 clear case: "Absolutely loved it!" → `positive` logprob -0.02 (prob ≈ 0.98). The
 logprob magnitude itself tells you which predictions to trust.
+
+A reference for reading logprobs — probability is just `e^(logprob)`:
+
+| Logprob | Probability = e^(logprob) | Reading |
+|---|---|---|
+| 0 | 1.00 | Certain — the ceiling; logprobs can never exceed 0 |
+| −0.10 | ≈ 0.90 | Very confident |
+| −0.69 | ≈ 0.50 | A coin flip |
+| −1.20 | ≈ 0.30 | Shaky — competitors are real |
+| −2.30 | ≈ 0.10 | Low confidence |
+| −4.60 | ≈ 0.01 | Very unlikely |
+| very negative (e.g. −20) | ≈ 0 | Effectively ruled out |
 
 ### Check questions
 
@@ -791,7 +881,31 @@ and asserts the output equals a saved golden string. It passes for a week, then 
 CI — yet nothing in your code changed. What happened: the output diverged for one of the
 infrastructure reasons. Perhaps your request landed in a differently-sized batch, the
 reduction order shifted, and at one step two tokens had near-identical logits — the tie
-broke the other way, and the rest of the generation followed a different path. Or the
+broke the other way, and the rest of the generation followed a different path.
+
+How one near-tie cascades into a wholly different answer:
+
+```
+            two near-equal logits at one step
+                  ┌─────────────────────┐
+                  │  "down"  logit 7.41 │   ◄── tiny FP perturbation
+                  │  "on"    logit 7.40 │       from batch/kernel change
+                  └─────────────────────┘
+                            │
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+       run A picks "down"           run B picks "on"
+              │                           │
+              ▼                           ▼
+     "...the cat sat down           "...the cat sat on
+        and waited."                  the warm mat."
+              │                           │
+              ▼                           ▼
+       diverging continuations — every later token conditions on
+       a different prefix, so the two answers never reconverge
+```
+
+One flipped close call near the start propagates through every subsequent step. Or the
 provider rolled a new kernel. Adding a `seed` would not have saved the test, because the
 divergence was not from sampling. Unless your provider offers an opt-in deterministic
 (batch-invariant) mode and you have enabled it, the correct fix is to stop asserting

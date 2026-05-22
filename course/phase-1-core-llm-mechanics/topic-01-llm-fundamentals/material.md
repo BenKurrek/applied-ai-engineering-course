@@ -294,6 +294,54 @@ intuitions to keep: attention is the *only* place tokens talk to each other (eve
 else is position-wise), and the FFN layers carry most of the parameters and most of the
 stored knowledge.
 
+Here is the data flow you should be able to whiteboard end to end:
+
+```
+  token IDs                  [ 791 ,  9059 ,  7731 ]   ("The cat sat")
+       │
+       ▼
+  embedding lookup  +  positional info
+       │
+       ▼
+  embedding vectors          [ v₁ ] [ v₂ ] [ v₃ ]      (one vector per token)
+       │
+       ▼
+  ┌─────────────────────────────────────────────────┐
+  │  TRANSFORMER BLOCK  (× N, identical structure)   │
+  │                                                  │
+  │     x ──┬──────────────────────────────┐         │
+  │         │                              │         │
+  │      RMSNorm  (pre-norm)                │         │
+  │         │                              │ residual│
+  │   self-attention  (mixes positions)     │         │
+  │         │                              │         │
+  │         └────────────► (+) ◄────────────┘         │
+  │                         │                        │
+  │     x ──┬───────────────┴──────────────┐         │
+  │         │                              │         │
+  │      RMSNorm  (pre-norm)                │         │
+  │         │                              │ residual│
+  │      FFN / MLP  (per-position)          │         │
+  │         │                              │         │
+  │         └────────────► (+) ◄────────────┘         │
+  │                         │                        │
+  └─────────────────────────┼────────────────────────┘
+                            ▼
+              final context-rich vectors
+                            │
+                            ▼
+              unembedding / LM head   (project last position)
+                            │
+                            ▼
+              logits   [ ~100k raw scores, one per vocab token ]
+                            │
+                            ▼
+              softmax  →  probability distribution over the vocabulary
+```
+
+Note the two clean residual highways inside each block — the input is added back after
+each sub-layer — and that the norm sits on each sub-layer's *input* (pre-norm).
+
 ### Key terms
 
 - **Transformer** — the neural-network architecture underpinning modern LLMs, built
@@ -486,7 +534,27 @@ Sequence: "The river bank was muddy." To represent `bank`, attention forms a que
 `bank` and dot-products it against the keys of `The`, `river`, `bank`, `was`, `muddy`.
 The query matches the key of `river` strongly, so `river` gets a high attention weight
 and the value at `bank` becomes a blend dominated by river-related content — the model
-disambiguates `bank` toward riverbank rather than financial bank. Now the cost: a
+disambiguates `bank` toward riverbank rather than financial bank.
+
+Here is the 5×5 attention grid for that sentence — query rows against key columns, with
+the causal mask blanking every upper-triangle cell (a token may not attend to a future
+token). Each row's visible weights sum to 1; the `bank` row puts most of its weight on
+`river`:
+
+```
+            KEY →
+            The   river  bank   was   muddy
+          ┌─────┬──────┬──────┬─────┬──────┐
+Q  The    │ 1.00│  ▒▒  │  ▒▒  │ ▒▒  │  ▒▒  │   ← only itself visible
+↓  river  │ 0.30│ 0.70 │  ▒▒  │ ▒▒  │  ▒▒  │
+   bank   │ 0.10│ 0.65 │ 0.25 │ ▒▒  │  ▒▒  │   ← high weight on "river"
+   was    │ 0.15│ 0.25 │ 0.45 │0.15 │  ▒▒  │
+   muddy  │ 0.10│ 0.20 │ 0.40 │0.10 │ 0.20 │
+          └─────┴──────┴──────┴─────┴──────┘
+            ▒▒ = masked (future token — not attendable)
+```
+
+Now the cost: a
 5-token sequence needs 5×5 = 25 query–key comparisons. A 1,000-token prompt needs
 1,000,000. A 100,000-token prompt needs 10,000,000,000 — ten billion. That quadratic
 blow-up is why long context is genuinely expensive.
@@ -559,6 +627,26 @@ therefore **memory-bandwidth-bound**: the bottleneck is moving billions of weigh
 memory, not arithmetic. Decode speed sets the **inter-token latency / time per output
 token (TPOT/ITL)** and the tokens-per-second you observe while text streams.
 
+The two phases on a timeline — one wide *parallel* prefill block, then a long string of
+small *sequential* decode ticks — look like this:
+
+```
+ time ──────────────────────────────────────────────────────────────►
+
+ │■■■■■■■■■■■■■■■■■■■■■■■■■■■■│ ▪  ▪  ▪  ▪  ▪  ▪  ▪  ▪  ▪  ▪  ▪  ▪  ▪
+ └──────── PREFILL ──────────┘ └──────────── DECODE ─────────────────┘
+  all input tokens, ONE        one token per step, SEQUENTIAL
+  parallel pass (compute-bound) (memory-bandwidth-bound)
+                              ▲
+                          TTFT marker
+                  (first output token appears here)
+
+  ◄── inflated by a long prompt ──►   ◄── inflated by a long answer ──►
+```
+
+The whole prompt is processed before the TTFT marker; every output token after it is its
+own small sequential tick.
+
 Why this distinction matters — it explains almost every latency and cost behavior you
 will meet:
 
@@ -593,6 +681,30 @@ the KV cache several-fold versus storing K/V per head. This is the architectural
 million-token context windows are servable at all: without GQA/MQA the KV cache for a
 long context would be prohibitively large. It is load-bearing for everything about
 long-context cost and the KV cache you will meet in Topics 4 and 6.
+
+The diagram below shows the KV cache *growing* across decode steps. Prefill fills the
+cache with the K/V columns for every prompt token at once; each decode step then appends
+exactly one new K/V column, while only the newest token's query (Q) is freshly computed:
+
+```
+                       cached K/V columns ──────────────►   freshly
+                                                            computed Q
+ after prefill   │ K/V K/V K/V K/V K/V │                    (none yet)
+ (4 prompt toks) └─────────────────────┘
+
+ decode step 1   │ K/V K/V K/V K/V K/V │ K/V │              Q₅  ← new
+                 └───── reused ────────┘ new
+
+ decode step 2   │ K/V K/V K/V K/V K/V   K/V │ K/V │        Q₆  ← new
+                 └──────── reused ──────────┘ new
+
+ decode step 3   │ K/V K/V K/V K/V K/V   K/V   K/V │ K/V │  Q₇  ← new
+                 └────────── reused ───────────────┘ new
+```
+
+Every prior token's K and V are read straight from the cache — never recomputed — which
+is exactly what makes each decode step roughly O(n) instead of O(n²). The cache also
+grows by one column per step, which is why long generations carry a growing memory cost.
 
 ### Key terms
 
@@ -642,6 +754,16 @@ is the same reason providers price output tokens higher than input. Cut the prom
 4,000 tokens and TTFT roughly halves
 but the 10 s of decode is unchanged. Cut the answer to 100 tokens and decode drops to
 ~2 s while TTFT is unchanged. Two separate levers.
+
+The two phases compared side by side:
+
+| Aspect | Prefill | Decode |
+|---|---|---|
+| Parallel? | Yes — all input tokens in one pass | No — one token at a time, sequential |
+| Bound by | Compute (arithmetic throughput) | Memory bandwidth (streaming weights) |
+| KV cache | Builds it (writes K/V for every prompt token) | Uses it (reads cached K/V, appends one column/step) |
+| Latency metric | Time to first token (TTFT) | Time per output token (TPOT / ITL), tokens/sec |
+| Cost driver | Prompt length (input tokens) | Answer length (output tokens) |
 
 ### Check questions
 
@@ -753,7 +875,25 @@ Suppose at one step the model produces these logits for four candidate tokens (t
 have very low logits): `mat` 4.0, `rug` 3.0, `couch` 1.0, `idea` -2.0. Softmax
 exponentiates: e^4 ≈ 54.6, e^3 ≈ 20.1, e^1 ≈ 2.7, e^-2 ≈ 0.14, summing to ≈ 77.5.
 Divide each: `mat` ≈ 0.70, `rug` ≈ 0.26, `couch` ≈ 0.035, `idea` ≈ 0.002. Now you have
-a real distribution. Greedy decoding emits `mat`. Sampling at temperature 1 emits `mat`
+a real distribution.
+
+Side by side — raw logits (unbounded scores) on the left, post-softmax probabilities
+(non-negative, summing to 1) on the right:
+
+```
+   RAW LOGITS                          POST-SOFTMAX PROBABILITIES
+   (unbounded scores)                  (sum to 1.00)
+
+   mat    │████████████████  4.0       mat    │██████████████  0.70
+   rug    │████████████      3.0       rug    │█████           0.26
+   couch  │████              1.0       couch  │▏               0.035
+   idea   │◄──── -2.0                  idea   │                0.002
+          └──────────────────                 └──────────────────
+          (can be negative)                   (always in [0, 1])
+```
+
+Softmax exponentiates the gaps, so the 1-point logit lead of `mat` over `rug` becomes a
+large probability lead, and the negative-logit `idea` is squashed to near zero. Greedy decoding emits `mat`. Sampling at temperature 1 emits `mat`
 ~70% of the time, `rug` ~26%, `couch` rarely, `idea` almost never. Raise temperature
 and the gap narrows (`rug` becomes more competitive); lower it and `mat` approaches
 certainty — all by rescaling those logits before softmax.
@@ -863,6 +1003,15 @@ and 2 otherwise. Turn 10 of the same chat might resend 5,000+ input tokens for a
 token user message. This is the mechanical reason long agent conversations get
 expensive and why summarization/eviction strategies (Topic 4.7) and prompt caching
 (Topic 6) exist.
+
+The two kinds of "memory" compared:
+
+| Property | Parameters (weights) | Context (context window) |
+|---|---|---|
+| Permanence | Permanent — fixed after training | Transient — exists only for this request |
+| Shared vs. per-request | Shared — identical for every request | Per-request — different every call |
+| How to change | A deliberate offline training/fine-tuning run | Just send different tokens next call |
+| What lives there | Language, world facts to the cutoff, reasoning patterns, style | System prompt, history, retrieved docs, tool results, current message |
 
 ### Check questions
 

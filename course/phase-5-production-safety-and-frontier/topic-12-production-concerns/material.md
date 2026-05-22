@@ -74,6 +74,22 @@ you what your worst-served users get. LLM latency distributions are heavy-tailed
 
 ### Worked example
 
+A single request lays out on a time axis as a *beginning* and a *streaming tail* —
+TTFT spans the queue wait plus prefill, and every decode tick after the first token is
+one TPOT:
+
+```
+ t=0                                                          total latency
+  │                                                                  │
+  ├──[ queue wait ]──[────────── prefill ──────────]│ tok tok tok ... │
+  │                                                 │  ↑   ↑   ↑      │
+  │◀───────────────── TTFT ───────────────────────▶ │  └─ TPOT ─┘ ... │
+  │   (provider capacity)   (scales w/ prompt len)   │  each gap = TPOT│
+  │                                       first token┘                │
+  │◀──────────────────────────── total latency ──────────────────────▶│
+        total = TTFT + (output_tokens − 1) × TPOT
+```
+
 A summarization endpoint: 8k-token input, 400-token output. Measured TTFT = 1.2 s,
 TPOT = 25 ms. Total ≈ 1.2 + 399 × 0.025 ≈ 11.2 s. The product team wants it under 6 s.
 Shortening the prompt to 4k tokens cuts TTFT to ~0.7 s — saves only 0.5 s. The real
@@ -159,6 +175,28 @@ semantically complete units. Concrete problems:
   inside the stream body after the 200; you must parse the event types.
 
 ### Worked example
+
+The SSE exchange is one HTTP request that opens a long-lived response and then pushes a
+sequence of events — note the 200 OK arrives *before* any content, so an error event can
+still arrive afterward:
+
+```
+   CLIENT                                   SERVER
+     │                                         │
+     │──── POST /messages (stream: true) ──────▶│
+     │                                         │  open stream
+     │◀──── HTTP 200 OK  text/event-stream ─────│  (status sent BEFORE content)
+     │                                         │
+     │◀──── data: {chunk}  (text delta) ────────│ ┐
+     │◀──── data: {chunk}  (text delta) ────────│ │ repeated as
+     │◀──── data: {chunk}  (tool-arg delta) ────│ │ tokens decode
+     │◀──── data: {chunk}  ... ─────────────────│ ┘
+     │                                         │
+     │◀──── event: error  (rate limit / fail) ──│  ← CAN arrive here,
+     │              ── or ──                    │    after the 200
+     │◀──── final event: stop_reason ───────────│  end_turn / max_tokens / ...
+     │                                         │
+```
 
 A chat UI streams markdown — works great. The team then adds a "structured profile"
 feature that asks the model for JSON and tries to render fields live. They call
@@ -268,7 +306,22 @@ large model (model cascading); use the Batch API for anything async.
 A support assistant on Sonnet 4.6: each request averages 6,000 input tokens (system
 prompt + history + KB snippet) and 350 output tokens. Cost =
 (6000/1e6 × $3) + (350/1e6 × $15) = $0.018 + $0.00525 = **$0.0233/request**. Users
-average 8 requests/day → $0.186/day → **$5.60/user/month**. Now cache the 4,500-token
+average 8 requests/day → $0.186/day → **$5.60/user/month**.
+
+Because output is billed at 5× input on current Claude models, it is clearer to compare
+designs in **input-equivalent tokens** — weight each output token as 5 input tokens.
+Three candidate designs for the same Sonnet feature:
+
+| Design | Prompt (input) tokens | Output tokens | Input-equivalent total (input + 5 × output) |
+|--------|----------------------:|--------------:|--------------------------------------------:|
+| A — long prompt, short answer  | 5,000 |   200 | 5,000 + 1,000 = **6,000**  |
+| B — short prompt, long answer  | 2,000 | 1,000 | 2,000 + 5,000 = **7,000**  |
+| C — this support assistant     | 6,000 |   350 | 6,000 + 1,750 = **7,750**  |
+
+The raw token counts mislead — Design B looks "smaller" at 3,000 raw tokens but is the
+most expensive of the three once output is weighted at 5×. A verbose answer, not a long
+prompt, is usually where the budget goes.
+ Now cache the 4,500-token
 static prefix: cached reads cost ~$0.30/M, so input becomes
 (4500/1e6 × $0.30) + (1500/1e6 × $3) = $0.00135 + $0.0045 = $0.006, plus output
 $0.00525 → **$0.0112/request**, roughly halving the bill to ~$2.70/user/month.
@@ -355,6 +408,28 @@ versus a naive loop is often a 5–20× cost difference at the same quality.
   recomposed* batch updated every decode step.
 
 ### Worked example
+
+Picture the batch as a grid — rows are batch slots, columns are decode steps. Under
+static batching a finished request leaves its slot **idle** until the slowest one ends;
+under continuous batching a freed slot is **refilled immediately** with a new request:
+
+```
+ STATIC BATCHING (slot freed at step → idle till slowest finishes)
+            step→  s1  s2  s3  s4  s5  s6
+   slot 1 [ R1 ]   ██  ██  ▒▒  ▒▒  ▒▒  ▒▒    R1 done @s2 → ▒ idle
+   slot 2 [ R2 ]   ██  ██  ██  ██  ██  ██    R2 long, blocks the batch
+   slot 3 [ R3 ]   ██  ▒▒  ▒▒  ▒▒  ▒▒  ▒▒    R3 done @s1 → ▒ idle
+   slot 4 [ R4 ]   ██  ██  ██  ▒▒  ▒▒  ▒▒    R4 done @s3 → ▒ idle
+                       ▒ = wasted GPU; batch returns only at s6
+
+ CONTINUOUS BATCHING (freed slot refilled the very next step)
+            step→  s1  s2  s3  s4  s5  s6
+   slot 1   R1  R1 │R5  R5  R5  R5│         R1 leaves @s2, R5 admitted
+   slot 2   R2  R2  R2  R2  R2  R2          R2 still running, no block
+   slot 3   R3 │R6  R6  R6 │R8  R8│         R3 leaves @s1, R6 then R8
+   slot 4   R4  R4  R4 │R7  R7  R7│         R4 leaves @s3, R7 admitted
+                       no idle cells — GPU stays saturated
+```
 
 A self-hosted Llama endpoint with static batching size 16: a batch finishes only when
 its longest completion (say 1,500 tokens) is done, so 15 slots sit idle for most of the
@@ -453,6 +528,34 @@ own the moment you run your own serving stack.
   the extra verification compute is nearly free.
 
 ### Worked example
+
+The draft model proposes a short run of tokens; the target model verifies all of them
+in a *single* forward pass, accepts the longest matching prefix, and emits its own
+correction for the first mismatch:
+
+```
+  DRAFT model proposes 4 tokens:        [ t1 ][ t2 ][ t3 ][ t4 ]
+                                           │     │     │     │
+  TARGET model verifies all 4 in ONE      ▼     ▼     ▼     ▼
+  forward pass — per-position check:      ✓     ✓     ✓     ✗
+                                          └──────┬──────┘     │
+                          accept prefix t1 t2 t3 ◀┘           │
+                          reject t4, TARGET emits correction ◀┘
+   → 4 tokens advanced (3 drafted + 1 target) for the price of 1 target pass
+```
+
+**The cost framing — why this is a win.** Decode is memory-bandwidth-bound, so a target
+forward pass is dominated by the one weight read; verifying N candidate tokens in that
+pass costs *about the same* as generating 1:
+
+```
+  WITHOUT spec. decoding:  generate 1 token   = 1 target forward pass
+  WITH spec. decoding:     verify 4 tokens    ≈ 1 target forward pass
+                           → up to 4 tokens advanced per pass instead of 1
+```
+
+So the verification work is nearly free; the only question is how many of the drafted
+tokens survive (the acceptance rate).
 
 A self-hosted 70B model serves two workloads. A summarization endpoint produces output
 that heavily echoes the source document — its text is highly predictable, so a small
@@ -642,6 +745,30 @@ agentic systems with real-world tools must have it.
 
 ### Worked example
 
+The circuit breaker is a three-state machine — it stops hammering a dead dependency by
+moving from CLOSED to OPEN, then probes recovery via HALF-OPEN:
+
+```
+        failure rate exceeds threshold
+        (e.g. 5 consecutive failures)
+   ┌──────────────────────────────────────────────┐
+   │                                              ▼
+┌──────────┐                                  ┌────────┐
+│  CLOSED  │                                  │  OPEN  │
+│  normal: │                                  │  fail  │
+│  calls   │                                  │  fast / │
+│  pass    │                                  │ fallback│
+│  through │                                  └────┬───┘
+└──────────┘                                       │ cooldown
+   ▲     ▲                                          │ elapsed
+   │     │                                          ▼
+   │     │  probe fails              ┌──────────────────┐
+   │     └──────────────────────────│    HALF-OPEN      │
+   │                                 │ let ONE probe     │
+   │   probe succeeds                │ request through   │
+   └─────────────────────────────────└──────────────────┘
+```
+
 A coding agent calls the LLM, which sometimes triggers a `deploy()` tool. The provider
 has a 30 s blip; the client retries the LLM call, the model again returns the same
 `deploy` tool_use, and the deploy fires twice — two releases. Fix: (1) the `deploy`
@@ -830,6 +957,36 @@ prompt cache for everything that still reaches the model.
   invalidation and eval coverage.
 
 ### Worked example
+
+The three caches form a fall-through stack — a request drops to the next layer only on
+a miss, and each layer it survives costs more than the last:
+
+```
+  request
+     │
+     ▼
+  ┌─────────────────────────┐   hit ──▶ return stored answer
+  │ 1. EXACT-MATCH cache    │           cost ≈ 0, latency ≈ 0
+  │    (request hash)       │           (no model call)
+  └───────────┬─────────────┘
+              │ miss
+              ▼
+  ┌─────────────────────────┐   hit ──▶ return neighbor's answer
+  │ 2. SEMANTIC cache       │           cost ≈ 0 (one embedding lookup)
+  │    (embedding similarity)│          ⚠ wrong-but-similar risk
+  └───────────┬─────────────┘
+              │ miss
+              ▼
+  ┌─────────────────────────┐   hit ──▶ skip PREFILL for shared prefix
+  │ 3. PROMPT cache (KV)    │           ~90% off cached input, lower TTFT
+  │    (shared prefix)      │           — model STILL decodes a fresh answer
+  └───────────┬─────────────┘
+              │ (always)
+              ▼
+  ┌─────────────────────────┐           full prefill + full decode
+  │ 4. MODEL CALL           │           — most expensive: full input + output
+  └─────────────────────────┘
+```
 
 A docs Q&A bot. Telemetry: 15% of queries are *byte-identical* repeats (popular
 questions copied from a help page) and another ~25% are paraphrases of a small cluster
