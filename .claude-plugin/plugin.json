@@ -1,0 +1,10 @@
+{
+  "name": "ai-course",
+  "displayName": "Applied AI Engineering — Tutored Course",
+  "version": "1.0.0",
+  "description": "A mastery-based, tutored course in Applied AI Engineering: build, evaluate, and ship production systems on top of large language models. Sixteen topics, five phases, gated exams.",
+  "author": {
+    "name": "Ben Kurrek"
+  },
+  "keywords": ["course", "education", "ai-engineering", "llm", "tutor"]
+}

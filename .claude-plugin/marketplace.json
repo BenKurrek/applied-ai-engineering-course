@@ -1,0 +1,15 @@
+{
+  "name": "kurrek-courses",
+  "owner": {
+    "name": "Ben Kurrek"
+  },
+  "description": "Tutored, mastery-based engineering courses.",
+  "plugins": [
+    {
+      "name": "ai-course",
+      "source": "./",
+      "description": "Applied AI Engineering — a tutored course on building production LLM systems.",
+      "version": "1.0.0"
+    }
+  ]
+}

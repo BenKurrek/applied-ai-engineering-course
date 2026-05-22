@@ -1,0 +1,5 @@
+# Internal authoring artifacts — not part of the published course
+dev/
+
+# OS / editor cruft
+.DS_Store
