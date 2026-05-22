@@ -1,11 +1,12 @@
 # Learner Profile — Template
 
-Starting template for the tutor's living model of a student. **This file is
-shared/committed.**
+Starting template for the tutor's living model of a student. This file is bundled,
+read-only, inside the plugin.
 
-On a student's first `/learn` session the tutor copies this file to
-`LEARNER-PROFILE.md` (which is git-ignored and personal) and populates it from there.
-Do not write observations into this template — only into the `LEARNER-PROFILE.md` copy.
+On a student's first `/ai-course:learn` session the tutor copies this file to
+`~/applied-ai-course/LEARNER-PROFILE.md` and populates it from there. Do not write
+observations into this template — only into the `~/applied-ai-course/LEARNER-PROFILE.md`
+copy.
 
 This file exists so teaching adapts to *this* student. It records what they have
 proven they understand, where they repeatedly slip, the misconceptions they have
@@ -21,7 +22,7 @@ slips are not patterns; record something as a weakness only once it recurs.
 - **Read it at session start**, before teaching, alongside `PROGRESS.md`.
 - **Let it drive teaching** — question selection, emphasis, pacing, and which
   misconceptions to pre-empt (see "Model the student" / "Let the learner model drive
-  teaching" in `.claude/tutoring-agent-guide.md`).
+  teaching" in `${CLAUDE_PLUGIN_ROOT}/course/tutoring-agent-guide.md`).
 - **Update it continuously** — the moment a check, quiz, or exam answer reveals
   something, and again at session end. Not only at topic completion.
 - **Keep it honest and current** — when the student has demonstrably overcome a

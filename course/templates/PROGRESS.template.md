@@ -1,10 +1,12 @@
 # Course Progress — Template
 
-Starting template for a student's progress tracker. **This file is shared/committed.**
+Starting template for a student's progress tracker. This file is bundled, read-only,
+inside the plugin.
 
-On a student's first `/learn` session the tutor copies this file to `PROGRESS.md`
-(which is git-ignored and personal) and fills it in from there. Do not teach from,
-or write progress into, this template — only into the `PROGRESS.md` copy.
+On a student's first `/ai-course:learn` session the tutor copies this file to
+`~/applied-ai-course/PROGRESS.md` and fills it in from there. Do not teach from, or
+write progress into, this template — only into the `~/applied-ai-course/PROGRESS.md`
+copy.
 
 Status values: `NOT STARTED` · `TEACHING` · `QUIZZING` · `EXAM READY` · `EXAM PASSED`
 
