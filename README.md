@@ -7,6 +7,15 @@ topics across five phases, each gated by a closed-book exam (85 to pass).
 The course is delivered as a Claude Code plugin. An AI tutor teaches interactively —
 explain, check, quiz, exam — and tracks your progress.
 
+## Disclaimer
+
+Much of this course's material was authored with the help of Claude and AI research
+agents, then put through fact-checking and review passes. Even so, **some claims,
+explanations, or examples may be inaccurate or out of date.** Treat the course as a
+strong study aid rather than an authoritative reference — verify anything critical
+against primary sources, and please open an issue or pull request if you spot an
+error.
+
 ## Install
 
 This course is a Claude Code plugin, distributed through this repository. Install it
