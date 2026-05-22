@@ -1,5 +1,6 @@
 # Internal authoring artifacts — not part of the published course
 dev/
+docs/superpowers/
 
 # OS / editor cruft
 .DS_Store
