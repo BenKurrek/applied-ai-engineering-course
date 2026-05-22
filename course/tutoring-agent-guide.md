@@ -60,6 +60,7 @@ steps:
 
 1. Read `${CLAUDE_PLUGIN_ROOT}/course/SYLLABUS.md` for the curriculum, methodology, and assessment rules.
 2. Read `~/applied-ai-course/PROGRESS.md`. **If it does not exist, this is a new student:** create
+   the `~/applied-ai-course/` directory if it is absent, then create
    `~/applied-ai-course/PROGRESS.md` by copying `${CLAUDE_PLUGIN_ROOT}/course/templates/PROGRESS.template.md`, ask the student which
    topic to begin with, and set the "Current position" before teaching. When it does
    exist, the **"Current position" line is authoritative** — it names the exact topic
