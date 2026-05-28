@@ -123,12 +123,113 @@ You want a sentiment label and a confidence score.
 
 ## 11.2 — How constrained decoding actually works — schema, grammar, and the token FSM
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §11.3. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
 
-11.1 said constrained decoding "masks illegal tokens." That is the *what*. This
-sub-chapter is the *how* — and the how matters, because the mechanism has a sharp
-practical consequence (a latency cost) and one genuinely hard problem (tokenizer
-alignment) that every engineer using structured outputs should understand.
+### Overview — Concept
+
+11.1 said constrained decoding "masks illegal tokens." That is the *what*. Here is the
+headline mechanism and the three practical consequences every engineer using structured
+outputs needs to know.
+
+**The headline.** Constrained decoding works *during* generation, token by token. At each
+decoding step, the constraint engine knows — given what has been generated so far — which
+next tokens would keep the output a valid prefix of a schema-conforming document. It
+builds a **mask** that sets the logits of all schema-illegal tokens to −∞, and only then
+samples. An illegal token has zero probability and *cannot be sampled*. **Non-conforming
+output is impossible by construction** — exactly as 11.1 claimed. There is no
+"validate-and-retry" step for structural validity; the document is born conformant.
+
+This also explains why field *order* is fixed and why a `reasoning` field must come
+first (§11.4): the engine walks the schema in order — once `answer` is the next expected
+field, the only sampleable tokens are tokens that begin its value, so any later
+`reasoning` field is filled too late to influence the answer.
+
+**Practical consequence 1 — there is a real but small latency cost.** "Constrained
+decoding is free latency-wise" is wrong. It has a one-time **compilation cost** when a
+new schema is first used and a recurring **per-token mask cost** inside the decoding
+loop. Modern fast engines drive the steady-state per-token overhead down to near
+negligible relative to the forward pass, but a brand-new complex schema on a
+latency-sensitive first request can still stall, and a poorly-optimized stack or a
+pathological schema makes it visible. (The internals of the compile pipeline and what
+makes naive masking slow are in the deep dive.)
+
+**Practical consequence 2 — providers support only a subset of JSON Schema.** Provider
+strict modes don't honor the full JSON Schema spec — they restrict features like
+unbounded recursion and arbitrary `pattern` regexes, and impose depth/size caps. This is
+not arbitrary product limitation: it falls out of *this* mechanism. The schema must be
+compilable into something the constraint engine can execute efficiently at every
+decoding step, and certain spec features are hard or expensive to compile that way. The
+exact subset is provider-specific, so you must check the docs.
+
+### Overview — Key terms
+
+- **Constrained decoding** — the mechanism that masks schema-illegal tokens at sampling
+  time so non-conforming output is impossible.
+- **Token mask** — the per-step vector that sets disallowed tokens' logits to −∞ before
+  sampling.
+- **Conformance-by-construction** — the property that an invalid document can never be
+  produced because illegal tokens have zero probability; no retry needed for structural
+  validity.
+- **Compilation cost (concept)** — the one-time cost of preparing a new schema for use;
+  paid first time and cacheable.
+- **Per-token mask cost (concept)** — the recurring per-step cost of building the
+  allowed-token mask inside the decoding loop.
+- **JSON Schema subset** — the provider-specific limited set of JSON Schema features a
+  strict mode actually supports, constrained by the compile pipeline.
+
+### Overview — Common misconceptions
+
+- ❌ "Constrained decoding just checks the JSON after the model writes it." → ✅ It works *during* generation, token by token: at each step illegal tokens are masked before sampling, so an invalid document can never be produced in the first place — there is no validate-and-retry for structural validity.
+- ❌ "Constrained decoding adds no latency." → ✅ It has a one-time schema-compilation cost and a recurring per-token masking cost. Fast engines make the steady-state overhead small, but it is not zero.
+- ❌ "Providers limit JSON Schema support arbitrarily." → ✅ The limits trace to this mechanism: a feature must be compilable into something the engine can execute efficiently at every step, so features like unbounded recursion and arbitrary regex `pattern`s are restricted.
+
+### Overview — Worked example
+
+Constraining the output to `{"in_stock": <boolean>}`. Walk it at the masking level (the
+internals of how the schema becomes the mask are in the deep dive):
+
+1. The schema is prepared so that at every decoding step the engine knows the set of
+   legal next tokens.
+2. After the engine has guided generation through the opening `{`, the key `"in_stock"`,
+   and the `:`, the next step expects a boolean. The model's vocabulary contains tokens
+   like `true`, `false`, `tru`, `t`, `maybe`, ` "yes"`, `123`. The engine masks
+   everything except tokens that legally begin `true` or `false`:
+
+   ```
+   step expects: a boolean value
+
+   vocab token │  true   false   tru    t    maybe   "yes"   123
+   ────────────┼───────────────────────────────────────────────────
+   legal?      │   ✓      ✓      ✓     ✓      ✗       ✗       ✗
+   logit       │  kept   kept   kept  kept   −∞      −∞      −∞
+   ```
+
+   The model can only sample from the ✓ tokens; everything else has zero probability.
+3. After the chosen value, only `}` is legal, then the document is complete.
+4. **Result.** Whatever the model "wanted" to say, the only documents it can produce are
+   `{"in_stock": true}` or `{"in_stock": false}` — guaranteed, because every other
+   continuation was unsampleable. Conformance by construction.
+
+### Overview — Check questions
+
+1. A teammate says "constrained decoding works by generating the text normally and then validating it against the JSON Schema, retrying if it's wrong." Identify what is wrong with this description and give the correct mechanism at the level of what the engine does each decoding step. — **Answer:** That describes generate-then-validate-with-retry, which is a *different*, weaker pattern. Constrained decoding works *during* generation: at every decoding step the engine knows which next tokens are schema-legal, sets the logits of all illegal tokens to −∞, and only then samples. An illegal token has zero probability, so an invalid document is never produced — conformance is guaranteed by construction, with no retry needed for *structural* validity.
+2. A team observes that the first request using a new strict-mode schema is slower than later requests with the same schema, and that requests using strict mode consistently have slightly higher per-token latency than unconstrained generation. At a conceptual level, what two costs are they observing? — **Answer:** The first-use spike is the **compilation cost** — preparing a new schema for use is one-time work, done when the schema is first seen and then cached, so a brand-new schema stalls the first request. The consistent per-token overhead is the **per-token mask cost** — at every decoding step the engine builds the allowed-token mask before sampling, which is recurring work inside the hot loop. Fast engines minimize the per-step cost but it is never exactly zero; "structured output is free" is wrong.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview said the engine "knows which next tokens are schema-legal" and "preparing a
+schema is one-time work." This section unpacks how — the three-stage compile pipeline,
+the genuinely hard tokenizer-alignment problem inside it, and the named engines you'll
+encounter. It is interview-bait — constrained-decoding internals get asked about on
+infra/ML interviews — but it is **not required** to advance and is not in the topic exam.
 
 **Step 1 — schema → grammar.** A JSON Schema is a *declarative* description ("an object
 with these fields, this one an enum, this one an integer"). It cannot be used directly to
@@ -154,13 +255,9 @@ property: at every generation step the machine is in some state, and that state 
 
 **Step 3 — per-step token masking.** Now the decoding loop. At each step the model
 produces logits over the *entire vocabulary* (tens or hundreds of thousands of tokens).
-Constrained decoding intersects "what the FSM allows" with "what tokens exist," builds a
-**mask** that sets the logit of every disallowed token to −∞, and only then samples. The
-sampled token is guaranteed schema-legal; the FSM advances to its next state; repeat.
-Because an illegal token has −∞ logit, it has zero probability — conformance is a
-guarantee *by construction*, exactly as 11.1 claimed. (This is also why field *order* is
-fixed and why a `reasoning` field must come first, 11.4: the FSM walks the schema in
-order.)
+The engine intersects "what the FSM allows" with "what tokens exist," builds the **mask**
+that sets the logit of every disallowed token to −∞, and only then samples. The sampled
+token is guaranteed schema-legal; the FSM advances to its next state; repeat.
 
 The three compilation steps are a linear pipeline; the third step runs as a loop, once
 per generated token:
@@ -203,7 +300,7 @@ reconciliation is the core engineering difficulty of constrained decoding, and d
 *naively* — walking the FSM character-by-character against all ~100k+ vocabulary tokens
 at every single step — is what makes constrained decoding slow.
 
-**The latency cost.** Constrained decoding is **not free**. Two costs:
+**The latency cost, decomposed.** Constrained decoding is **not free**. Two costs:
 
 1. **Compilation cost (one-time per schema).** Turning a schema into a grammar and the
    grammar into an FSM/automaton takes time. A complex schema can take noticeable time to
@@ -218,8 +315,7 @@ at every single step — is what makes constrained decoding slow.
 The modern fast libraries get the steady-state per-token overhead very low — often near
 negligible relative to the forward pass — but the principle stands: someone is paying a
 compilation cost and a per-step masking cost, and on a poorly-optimized stack or a
-pathological schema it is visible. "Structured output is free latency-wise" is a
-misconception.
+pathological schema it is visible.
 
 **Named systems to know.** You will encounter these by name:
 
@@ -236,31 +332,31 @@ misconception.
 
 You rarely call these directly — a provider's "Structured Outputs" / `strict: true` mode
 or a serving framework (vLLM, TGI, SGLang) uses one of them under the hood. But knowing
-the layer exists explains *why* a provider supports only a subset of JSON Schema (11.3):
-the schema must be compilable into a grammar their engine can execute efficiently, and
-features like unbounded recursion or arbitrary `pattern` regexes are hard or expensive to
-turn into a fast FSM.
+the layer exists explains *why* a provider's supported JSON Schema subset is shaped the
+way it is — a feature must be compilable into a grammar/FSM the engine can execute
+efficiently, and features like unbounded recursion or arbitrary `pattern` regexes are
+hard or expensive to turn into a fast FSM.
 
-### Key terms
+### Deep dive — Key terms
 
 - **Grammar (BNF / EBNF / GBNF)** — a formal, generative description of exactly which strings are valid; the compiled form of a schema for constraining generation.
 - **Finite-state machine / automaton** — the per-step machine compiled from the grammar; each state defines the set of legal next tokens. JSON nesting needs a pushdown automaton (FSM + stack).
-- **Token mask** — the per-step vector that sets disallowed tokens' logits to −∞ before sampling.
-- **Tokenizer-alignment problem** — the mismatch between character-level grammar boundaries and multi-character token boundaries, which the constraint engine must reconcile.
-- **Compilation cost** — the one-time cost of turning a schema into a grammar and FSM.
-- **Per-token mask cost** — the recurring per-step cost of computing the allowed-token mask inside the decoding loop.
-- **Outlines / XGrammar / llguidance / Guidance** — named constrained-decoding engines/libraries that providers and serving stacks use under the hood.
+- **Pushdown automaton** — an FSM plus a stack; needed for arbitrarily-nested JSON.
+- **Tokenizer-alignment problem** — the mismatch between character-level grammar boundaries and multi-character token boundaries, which the constraint engine must reconcile for every vocabulary token at every step.
+- **Compilation cost (mechanism)** — the one-time cost of running the schema → grammar → FSM pipeline.
+- **Per-token mask cost (mechanism)** — the recurring per-step cost of intersecting the FSM-legal set with the vocabulary and building the −∞ mask.
+- **Outlines / XGrammar / llguidance / Guidance / GBNF** — named constrained-decoding engines/libraries/formats that providers and serving stacks use under the hood.
 
-### Common misconceptions
+### Deep dive — Common misconceptions
 
-- ❌ "Constrained decoding just checks the JSON after the model writes it." → ✅ It works *during* generation, token by token: the schema is compiled to a grammar then an FSM, and each step masks illegal tokens before sampling — so an invalid document can never be produced in the first place.
 - ❌ "The grammar can constrain the model character by character directly." → ✅ The model emits multi-character *tokens* that don't align with grammar boundaries; the engine must, for every vocabulary token, decide whether the whole token is a legal FSM continuation — the tokenizer-alignment problem.
-- ❌ "Constrained decoding adds no latency." → ✅ It has a one-time schema-compilation cost and a per-token masking cost; fast engines (XGrammar, llguidance) make the steady-state overhead small, but it is not zero, and a naive implementation can be slow.
-- ❌ "Providers limit JSON Schema support arbitrarily." → ✅ The limits trace to this mechanism: a feature must be compilable into a grammar/FSM the engine can execute efficiently, so unbounded recursion and arbitrary regex `pattern`s are restricted.
+- ❌ "Naive constrained decoding is fast — masking is just setting some logits to −∞." → ✅ The setting-to-−∞ is cheap; the expensive part is *deciding which tokens* by walking the FSM character-by-character against ~100k+ vocabulary tokens every step. Fast engines (XGrammar, llguidance) precompute this mapping so the per-step cost becomes a cheap lookup.
+- ❌ "A regular FSM is enough for any JSON Schema." → ✅ JSON's arbitrary nesting needs a pushdown automaton (FSM + stack) to track depth; that's also why unbounded recursion is hard to support efficiently.
 
-### Worked example
+### Deep dive — Worked example
 
-Constraining the output to `{"in_stock": <boolean>}`.
+Re-do the `{"in_stock": <boolean>}` trace, this time showing the schema → grammar → FSM
+preparation and the tokenizer-alignment work *inside* a single decoding step.
 
 1. **Schema → grammar.** The compiler emits rules roughly: `root ::= "{" ws "\"in_stock\""
    ws ":" ws boolean ws "}"` and `boolean ::= "true" | "false"` (with `ws` = optional
@@ -269,30 +365,10 @@ Constraining the output to `{"in_stock": <boolean>}`.
    the literal key and `:`, the machine reaches a state whose *only* legal continuations
    are the start of `true` or the start of `false`. After the value, only `}` is legal,
    then the document is complete.
-3. **Token masking in the value state.** Suppose generation has reached the
-   value-expecting state. The model's vocabulary contains tokens like `true`, `false`,
-   `tru`, `t`, `maybe`, ` "yes"`, `123`. The engine masks everything except tokens that
-   are a legal prefix of `true` or `false` — so `maybe`, ` "yes"`, `123` get −∞ logits.
-   Visualized as a pass over the vocabulary row in the value-expecting FSM state:
-
-   ```
-   FSM state: value-expecting  (legal continuations: start of `true` or `false`)
-
-   vocab token │  true   false   tru    t    maybe   "yes"   123
-   ────────────┼───────────────────────────────────────────────────
-   FSM-legal?  │   ✓      ✓      ✓     ✓      ✗       ✗       ✗
-   logit       │  kept   kept   kept  kept   −∞      −∞      −∞
-               │  ▲                          ▲
-               │  legal prefix of a           not a prefix of
-               │  schema value                `true`/`false` → unsampleable
-   ```
-
-   The model can only sample from the ✓ tokens; everything else is impossible.
-4. **The tokenizer-alignment trace — one multi-character token across a boundary.**
-   This is the genuinely hard part, so trace it concretely. The grammar/FSM thinks in
-   *characters*; the model emits *tokens*. Consider the very first token. The grammar's
-   `root` rule says the document must begin `{` then optional whitespace then the literal
-   key `"in_stock"`. Three vocabularies handle this differently:
+3. **The tokenizer-alignment trace — one multi-character token across a boundary.**
+   Consider the very first decoding step. The grammar's `root` rule says the document
+   must begin `{` then optional whitespace then the literal key `"in_stock"`. Three
+   different tokenizer vocabularies handle this very differently:
 
    ```
    character-level grammar boundary:  {  "  i  n  _  s  t  o  c  k  "  :  ...
@@ -314,24 +390,24 @@ Constraining the output to `{"in_stock": <boolean>}`.
    `{"in_stockX` would be masked — it diverges from the key on the final character even
    though `{"in_stock` is fine; a token that is *partly* legal and partly not is
    forbidden. So with Vocab C the single token `{"in_stock":` legally advances the FSM
-   all the way to the value-expecting state of step 3 in one decoding step — the grammar
-   boundary (the colon) falls *inside* the token, and the engine had to verify the token
+   all the way to the value-expecting state in one decoding step — the grammar boundary
+   (the colon) falls *inside* the token, and the engine had to verify the token
    character-by-character against the FSM to permit it. This token-vs-FSM walk, done for
    *every* one of the ~100k+ vocabulary tokens at *every* step, is the tokenizer-alignment
-   work, and doing it naively is what makes constrained decoding slow.
-5. **Result.** Whatever the model "wanted" to say, the only documents it can produce are
-   `{"in_stock": true}` or `{"in_stock": false}` — guaranteed, because every other
-   continuation was unsampleable.
+   work — and doing it naively is what makes constrained decoding slow. Engines like
+   XGrammar and llguidance precompute the token↔FSM mapping so this becomes a cheap
+   lookup per step.
+4. **Cost decomposition for this example.** Steps 1–2 (schema → grammar → FSM) are the
+   one-time **compilation cost**, paid the first time this schema is used and cached
+   thereafter — a tiny schema like this compiles in microseconds, but a 4-level-deep
+   nested object with several enums takes meaningfully longer (still paid once). Step 3,
+   the tokenizer-alignment walk, repeats *every decoding step* — that is the recurring
+   **per-token mask cost**, and what the fast engines exist to minimize.
 
-If instead the schema were a 4-level-deep nested object with several enums, step 1–2
-would take meaningfully longer to compile (paid once, cached), and step 3 would run a
-larger mask computation every token — the latency cost the fast engines exist to minimize.
+### Deep dive — Check questions
 
-### Check questions
-
-1. A teammate says "constrained decoding works by generating the text normally and then validating it against the JSON Schema, retrying if it's wrong." Identify what is wrong with this description and give the correct mechanism. — **Answer:** That describes generate-then-validate-with-retry, which is a *different*, weaker pattern. Constrained decoding works *during* generation: the schema is compiled into a grammar and then a finite-state machine; at every decoding step the FSM defines the set of legal next tokens, the engine masks (sets to −∞) the logits of all illegal tokens, and only then samples. An invalid document is never produced — conformance is guaranteed by construction, with no retry needed for *structural* validity.
-2. Explain the tokenizer-alignment problem: why can the constraint engine not simply allow or forbid the next *character*? — **Answer:** The grammar/FSM reasons in characters ("next must be a digit or `}`"), but the model does not emit characters — it emits *tokens*, arbitrary multi-character chunks chosen by the tokenizer that do not align with grammar boundaries (one token might be `{"` or `_name":`, spanning grammar elements). So the engine cannot check a single character; for *every* token in the ~100k+ vocabulary it must determine whether that whole multi-character token is a legal continuation from the current FSM state, possibly advancing the FSM through several states. Reconciling token boundaries with character-level grammar boundaries is the core difficulty, and doing it naively is what makes constrained decoding slow.
-3. A team measures higher TTFT/latency the first time each new schema is used, and a smaller but constant per-token overhead thereafter. Explain both observations in terms of the mechanism. — **Answer:** The first-use spike is the **compilation cost**: turning a new schema into a grammar and then an FSM/automaton is one-time work, done when the schema is first seen (and then cacheable) — so a brand-new schema stalls the first request. The constant per-token overhead is the **per-token mask cost**: at every decoding step the engine intersects the FSM's legal set with the vocabulary and builds the −∞ mask before sampling, which is recurring work inside the hot loop. Fast engines (XGrammar, llguidance) precompute token↔FSM mappings to shrink this, but it is never exactly zero — "structured output is free" is wrong.
+1. Explain the tokenizer-alignment problem: why can the constraint engine not simply allow or forbid the next *character*? — **Answer:** The grammar/FSM reasons in characters ("next must be a digit or `}`"), but the model does not emit characters — it emits *tokens*, arbitrary multi-character chunks chosen by the tokenizer that do not align with grammar boundaries (one token might be `{"` or `_name":`, spanning grammar elements). So the engine cannot check a single character; for *every* token in the ~100k+ vocabulary it must determine whether that whole multi-character token is a legal continuation from the current FSM state, possibly advancing the FSM through several states. Reconciling token boundaries with character-level grammar boundaries is the core difficulty, and doing it naively is what makes constrained decoding slow.
+2. A team measures higher TTFT/latency the first time each new schema is used, and a smaller but constant per-token overhead thereafter. Decompose both observations into the specific stages of the constrained-decoding pipeline, and name a class of engine that exists to drive the recurring cost down. — **Answer:** The first-use spike is the **compilation cost**: turning a new schema into a grammar (BNF/EBNF/GBNF) and then an FSM/automaton is the one-time schema → grammar → FSM pipeline, paid when the schema is first seen and then cacheable — so a brand-new schema stalls the first request. The constant per-token overhead is the **per-token mask cost**: at every decoding step the engine intersects the FSM's legal set with the vocabulary (the tokenizer-alignment walk) and builds the −∞ mask before sampling, which is recurring work inside the hot loop. Fast engines like **XGrammar** and **llguidance** precompute token↔FSM mappings so the per-step cost becomes a cheap lookup, but it is never exactly zero — "structured output is free" is wrong.
 
 ---
 
@@ -836,7 +912,7 @@ mark 85.
 8. Tool-use-for-structure is obsolete and should never be used now that native structured outputs exist. — **Answer:** False. It is a *workaround* for a structured final answer, but it remains appropriate inside genuine agentic flows (where the model is choosing among real tools) and on older models/providers without native structured outputs.
 9. Constrained decoding validates the JSON after the model finishes generating and retries if it is wrong. — **Answer:** False. It works *during* generation: the schema is compiled to a grammar then a finite-state machine, and at each step illegal tokens are masked (logits set to −∞) before sampling, so an invalid document is never produced. Generate-then-validate-then-retry is a separate, weaker pattern.
 10. Constrained decoding adds essentially no latency because masking tokens is trivial. — **Answer:** False. It has a one-time schema-compilation cost (schema → grammar → FSM) and a recurring per-token mask cost inside the decoding loop. Fast engines (XGrammar, llguidance) shrink the steady-state overhead, but it is not zero, and a naive implementation can be slow.
-11. The tokenizer-alignment problem exists because grammar boundaries are defined over characters while the model emits multi-character tokens that need not line up with them. — **Answer:** True. The FSM reasons in characters, but the model emits arbitrary multi-character tokens; for every vocabulary token the engine must decide whether the whole token is a legal FSM continuation — reconciling these mismatched boundaries is the core difficulty of constrained decoding.
+11. [deep-dive] The tokenizer-alignment problem exists because grammar boundaries are defined over characters while the model emits multi-character tokens that need not line up with them. — **Answer:** True. The FSM reasons in characters, but the model emits arbitrary multi-character tokens; for every vocabulary token the engine must decide whether the whole token is a legal FSM continuation — reconciling these mismatched boundaries is the core difficulty of constrained decoding.
 12. If a model would refuse a request but you have forced it into a strict schema with no refusal path, the refusal will fail schema validation so your pipeline can catch it. — **Answer:** False. The model, unable to emit a refusal, fills the required fields with a guess/placeholder and emits a fully *schema-valid* object; it passes validation. The pipeline mistakes the disguised refusal for a success unless the schema includes an explicit refusal / no-answer outcome.
 
 ### Multiple Choice
@@ -865,13 +941,13 @@ mark 85.
 8. An extraction pipeline under strict mode produces objects that always pass schema validation, but a downstream report is full of `"unknown"` and empty strings. This is best described as:
    A) A constrained-decoding bug  B) Valid-but-useless output — schema-conforming objects whose values are placeholders the model emitted because it didn't actually know  C) A streaming/partial-JSON problem  D) A schema-drift problem
    — **Answer:** B. Strict mode forces a value of the right type even when the model has no real answer, so it fills required fields with placeholders. Schema validity is not task success; the fix is semantic validation plus prompt/abstention design.
-9. Put the stages of constrained decoding in the correct order:
+9. [deep-dive] Put the stages of constrained decoding in the correct order:
    A) JSON Schema → token mask → grammar → FSM  B) JSON Schema → grammar → finite-state machine → per-step token masking  C) FSM → grammar → JSON Schema → sampling  D) Grammar → JSON Schema → token mask → FSM
    — **Answer:** B. A declarative JSON Schema is compiled into a formal grammar (BNF/EBNF/GBNF), the grammar is compiled into a finite-state machine that defines legal next tokens per state, and at each decoding step illegal tokens are masked before sampling.
-10. Why does a provider's strict mode support only a *subset* of JSON Schema (e.g., restricting unbounded recursion and arbitrary regex patterns)?
+10. [deep-dive] Why does a provider's strict mode support only a *subset* of JSON Schema (e.g., restricting unbounded recursion and arbitrary regex patterns)?
    A) To save the customer money  B) Because the schema must be compilable into a grammar/FSM the constraint engine can execute efficiently, and some features are hard or expensive to turn into a fast automaton  C) Because the JSON spec forbids those features  D) Because larger schemas always hallucinate
    — **Answer:** B. Constrained decoding runs by compiling the schema to a grammar then an FSM; features like unbounded recursion or arbitrary `pattern` regexes are hard or costly to compile into a fast automaton, so providers restrict the supported subset.
-11. A constrained-decoding engine cannot simply allow or forbid the next *character* because:
+11. [deep-dive] A constrained-decoding engine cannot simply allow or forbid the next *character* because:
    A) Characters are not in the model's vocabulary at all  B) The model emits multi-character tokens that don't align with grammar boundaries, so the engine must decide per-token whether the whole token is a legal FSM continuation  C) JSON has no character-level structure  D) The FSM only tracks whole words
    — **Answer:** B. This is the tokenizer-alignment problem: the grammar/FSM reasons in characters but generation is token-by-token, and tokens span grammar boundaries; the engine must evaluate every vocabulary token against the current FSM state.
 12. A fraud-extraction service runs a strict schema with all fields required and no status field. On a request the model would refuse, it emits a schema-valid object with placeholder values, which the pipeline records as a clean result. The root cause is best described as:
@@ -887,9 +963,9 @@ mark 85.
 5. What should a robust integration do after exhausting its retry budget? — **Model answer:** Execute a defined terminal fallback — route to a human, return a typed error/`null`, or downgrade to a simpler schema — log the failure, and never ship a guessed or partially-valid object downstream.
 6. Why is structured output complicated by streaming? — **Model answer:** A partial JSON fragment received mid-stream is not parseable or schema-validatable until complete; you must either buffer the full response before validating or use a tolerant partial-JSON parser.
 7. Why is tool-use-for-structure considered a workaround rather than the preferred approach? — **Model answer:** It repurposes the tool/function-calling feature — designed for the model to request actions — to do output formatting; it can be more brittle and harder to reason about than a dedicated native structured-output mode, which is now preferred for a structured final answer.
-8. Describe the three-stage pipeline by which a JSON Schema becomes a hard constraint on generation. — **Model answer:** (1) Schema → grammar: the declarative JSON Schema is compiled into a formal generative grammar (BNF/EBNF; GBNF in llama.cpp) describing exactly which strings are valid. (2) Grammar → finite-state machine: the grammar is compiled into a state machine (a pushdown automaton for JSON's nesting) where each state defines the set of legal next tokens given what has been generated. (3) Per-step token masking: at each decoding step the engine sets the logits of all FSM-illegal tokens to −∞ and samples only from the legal set, so a non-conforming document can never be produced.
-9. What is the tokenizer-alignment problem in constrained decoding, and why does it make a naive implementation slow? — **Model answer:** The grammar/FSM reasons over characters, but the model generates multi-character *tokens* that do not align with grammar boundaries (a token may span grammar elements). The engine therefore cannot check one character; for every token in the ~100k+ vocabulary it must determine whether the whole token is a legal continuation from the current FSM state, possibly advancing the FSM through several states. Doing this from scratch at every decoding step is what makes a naive implementation slow; fast engines (XGrammar, llguidance) precompute the token↔FSM mapping so the per-step cost becomes a cheap lookup.
-10. Name the two latency costs of grammar-constrained decoding and when each is paid. — **Model answer:** (1) Compilation cost — the one-time work of turning a schema into a grammar and then an FSM; paid the first time a schema is used (then cacheable), so a brand-new schema can stall a latency-sensitive first request. (2) Per-token mask cost — the recurring work of computing the allowed-token mask at every decoding step inside the hot loop; fast engines minimize it but it is never exactly zero.
+8. [deep-dive] Describe the three-stage pipeline by which a JSON Schema becomes a hard constraint on generation. — **Model answer:** (1) Schema → grammar: the declarative JSON Schema is compiled into a formal generative grammar (BNF/EBNF; GBNF in llama.cpp) describing exactly which strings are valid. (2) Grammar → finite-state machine: the grammar is compiled into a state machine (a pushdown automaton for JSON's nesting) where each state defines the set of legal next tokens given what has been generated. (3) Per-step token masking: at each decoding step the engine sets the logits of all FSM-illegal tokens to −∞ and samples only from the legal set, so a non-conforming document can never be produced.
+9. [deep-dive] What is the tokenizer-alignment problem in constrained decoding, and why does it make a naive implementation slow? — **Model answer:** The grammar/FSM reasons over characters, but the model generates multi-character *tokens* that do not align with grammar boundaries (a token may span grammar elements). The engine therefore cannot check one character; for every token in the ~100k+ vocabulary it must determine whether the whole token is a legal continuation from the current FSM state, possibly advancing the FSM through several states. Doing this from scratch at every decoding step is what makes a naive implementation slow; fast engines (XGrammar, llguidance) precompute the token↔FSM mapping so the per-step cost becomes a cheap lookup.
+10. [deep-dive] Name the two latency costs of grammar-constrained decoding and when each is paid. — **Model answer:** (1) Compilation cost — the one-time work of turning a schema into a grammar and then an FSM; paid the first time a schema is used (then cacheable), so a brand-new schema can stall a latency-sensitive first request. (2) Per-token mask cost — the recurring work of computing the allowed-token mask at every decoding step inside the hot loop; fast engines minimize it but it is never exactly zero.
 11. Explain the refusal–strict-schema conflict and give two designs that resolve it. — **Model answer:** When a model would refuse or cannot answer (unsafe request, unanswerable input, out of scope) but is forced into a strict schema with no refusal path, constrained decoding's token masking physically prevents it from emitting a refusal — so it fabricates a schema-valid object from a guess/placeholder, which passes validation and is mistaken for a success. Resolutions (any two): add a top-level `status` enum (`ok` / `refused` / `no_answer`) making refusal a first-class in-schema outcome; make answer fields nullable so "not present" is legal; use a two-step pipeline where an unconstrained call decides answerability/safety first and only then a constrained call structures the result; and prompt the model explicitly on how to signal a refusal using the schema.
 
 ### Long Answer
@@ -898,7 +974,7 @@ mark 85.
 2. Explain precisely what strict schema mode guarantees and what it does not, and what follows for system design. — **Model answer / rubric:** Guarantees (structural contract): valid JSON, all required fields present, correct value types, enum values within the allowed set, no extra fields with `additionalProperties:false`, correct nesting. Does not guarantee (semantic): value correctness, cross-field invariants, arbitrary string content/format, the *right* enum choice, truthfulness/no hallucination; also providers support only a subset of JSON Schema. Design consequence: strict mode eliminates the parsing/shape error class but a semantic validation layer (ranges, invariants, business rules) is still required, plus a corrective-retry loop and terminal fallback; treat model output as untrusted input at a typed boundary. Credit for the structural-vs-semantic distinction, concrete examples, and the design implication.
 3. Explain how structured output can degrade reasoning and give a full set of workarounds. — **Model answer / rubric:** Cause: LLMs reason by generating tokens; a terse schema forces the answer as the first content token, suppressing chain-of-thought; constrained decoding can also push the model off its natural distribution and the format becomes a competing objective. Effect: roughly neutral for simple extraction/classification, but a measurable accuracy drop on hard reasoning if naively constrained. Workarounds: a `reasoning`/scratchpad field placed *before* the answer fields; a two-step pipeline (unconstrained reasoning call, then a constrained reformat call); using the provider's extended-thinking channel alongside structured output; loosening the schema where free-text is acceptable. Principle: separate thinking from formatting — never force a hard answer as the first token. Credit for the mechanism, the nuanced empirical picture, and multiple correct workarounds.
 4. Describe a robust end-to-end structured-output integration, from schema definition to failure handling and monitoring. — **Model answer / rubric:** Define the data model in Pydantic/Zod as the single source of truth; derive the JSON Schema from it and send it to the model with constrained/strict decoding. Parse the response and run semantic validation at the boundary (ranges, formats, cross-field invariants, business rules) into a typed object. On validation failure, run a bounded corrective-retry loop — re-prompt with the invalid output and the specific error — capped at a few attempts. After exhausting retries, execute a terminal fallback (human handoff, typed error, simpler schema) and never ship a bad object. Monitor the schema-failure rate as a production metric; handle streaming by buffering or partial parsing. Credit for schema-as-code, the parse+semantic-validation boundary, bounded corrective retries, the terminal fallback, and monitoring.
-5. Explain in full how constrained decoding turns a JSON Schema into a hard guarantee, including the tokenizer-alignment problem and the latency cost. — **Model answer / rubric:** Mechanism: the declarative JSON Schema is compiled into a formal grammar (BNF/EBNF; GBNF for llama.cpp); the grammar is compiled into a finite-state machine — a pushdown automaton, since JSON nesting needs a stack — where each state defines the legal next tokens given what has been generated. At every decoding step the engine intersects the FSM's legal set with the vocabulary, masks all illegal tokens' logits to −∞, and samples; the FSM then advances. An illegal token has zero probability, so conformance holds by construction. Tokenizer-alignment problem: the FSM reasons in characters but the model emits multi-character tokens that do not align with grammar boundaries, so for every vocabulary token the engine must decide whether the whole token is a legal continuation (possibly advancing the FSM through several states) — the core difficulty, and what makes a naive implementation slow. Latency: a one-time schema-compilation cost (paid on first use, cacheable) and a recurring per-token mask cost in the decoding loop; engines like Outlines, XGrammar, and llguidance precompute the token↔FSM mapping to minimize the per-step overhead, but it is not zero. Also explains why providers support only a JSON-Schema subset: a feature must be compilable into an efficiently-executable grammar/FSM. Credit for the three-stage pipeline, the alignment problem, the two latency costs, named systems, and the schema-subset link.
+5. [deep-dive] Explain in full how constrained decoding turns a JSON Schema into a hard guarantee, including the tokenizer-alignment problem and the latency cost. — **Model answer / rubric:** Mechanism: the declarative JSON Schema is compiled into a formal grammar (BNF/EBNF; GBNF for llama.cpp); the grammar is compiled into a finite-state machine — a pushdown automaton, since JSON nesting needs a stack — where each state defines the legal next tokens given what has been generated. At every decoding step the engine intersects the FSM's legal set with the vocabulary, masks all illegal tokens' logits to −∞, and samples; the FSM then advances. An illegal token has zero probability, so conformance holds by construction. Tokenizer-alignment problem: the FSM reasons in characters but the model emits multi-character tokens that do not align with grammar boundaries, so for every vocabulary token the engine must decide whether the whole token is a legal continuation (possibly advancing the FSM through several states) — the core difficulty, and what makes a naive implementation slow. Latency: a one-time schema-compilation cost (paid on first use, cacheable) and a recurring per-token mask cost in the decoding loop; engines like Outlines, XGrammar, and llguidance precompute the token↔FSM mapping to minimize the per-step overhead, but it is not zero. Also explains why providers support only a JSON-Schema subset: a feature must be compilable into an efficiently-executable grammar/FSM. Credit for the three-stage pipeline, the alignment problem, the two latency costs, named systems, and the schema-subset link.
 6. Explain the refusal vs. strict-schema conflict: why it happens, why it is dangerous, and how to design around it. — **Model answer / rubric:** Why it happens: a model legitimately needs to refuse or abstain (unsafe/out-of-policy request, unanswerable or empty input, out of scope, low confidence); but constrained decoding masks every token, so if the strict schema has no refusal path the FSM physically prevents the model from emitting a refusal — the only token paths lead to a conforming object. Why dangerous: cornered, the model fills the required fields with a guess/placeholder/hallucination and emits a fully schema-valid object that passes validation, so a naive pipeline mistakes a disguised refusal for a success and ships fabricated data — a strict schema converts an honest "I don't know" into a confident wrong answer; it also competes with safety training. How to design around it: build an in-schema escape hatch — a top-level `status` enum (`ok` / `refused` / `no_answer`) as a discriminated union, and/or nullable answer fields; prompt the model explicitly on how to signal refusal using the schema; or use a two-step pipeline where an unconstrained call handles answerability/safety first; and have the validation layer treat a refusal status as an expected branch, not an error. Principle: a strict schema must be able to represent *every* legitimate outcome including "no." Credit for the masking mechanism, disguised-failure danger, the safety tension, and concrete escape-hatch designs.
 
 ### Applied Scenario

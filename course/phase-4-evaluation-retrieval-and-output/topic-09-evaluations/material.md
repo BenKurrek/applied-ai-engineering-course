@@ -1031,7 +1031,15 @@ The winner is then re-run on a held-out 150-case split to confirm it wasn't an o
 
 ## 9.12 — A/B testing LLM features in production
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §9.13. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 Offline evals predict; **A/B testing** confirms with real users and real outcomes. You
 split live traffic between a control (A, current system) and a treatment (B, the change —
@@ -1049,40 +1057,27 @@ that actually matters.
 **Metrics.** Prefer **outcome metrics** over proxy metrics: task completion / resolution
 rate, escalation-to-human rate, user retention, conversion, time-to-resolution. Implicit
 behavioral signals (thumbs, edits, retries, regenerations, conversation abandonment,
-copy/paste of the answer) are valuable and cheap. Guardrail metrics matter too: latency,
+copy/paste of the answer) are valuable and cheap. **Guardrail metrics** matter too: latency,
 cost-per-request, error rate — B must not win quality while quietly tripling cost.
 
-**Statistical rigor — the LLM-specific traps:**
+**Discipline you need before you ever look at a p-value:**
 - **Sample size / power.** Decide the minimum detectable effect and required sample size
   *before* starting; underpowered tests give noisy, non-reproducible results.
-- **Statistical significance — use the right test.** Don't eyeball a 2% difference; run a
-  proper hypothesis test, and the *kind* of metric dictates which one:
-  - For a **rate / proportion** metric (resolution rate, thumbs-up rate, click-through —
-    each user is a success/failure) the standard test is a **two-proportion z-test**
-    (equivalently a chi-squared test): it asks whether the difference between A's and B's
-    success proportions is larger than sampling noise would produce.
-  - For a **continuous** metric (latency, time-to-resolution, tokens per session, revenue
-    per user) use a **t-test** (Welch's t-test, which does not assume equal variances) on
-    the per-user means, or a non-parametric **Mann-Whitney U** test if the metric is
-    heavily skewed.
-  - **CUPED (Controlled-experiment Using Pre-Experiment Data)** is a variance-reduction
-    technique, not a test of its own: it uses each user's *pre-experiment* behavior as a
-    covariate to subtract out predictable user-to-user variance, which **shrinks the
-    confidence interval** and lets you detect the same effect with a smaller sample or
-    shorter run. It is widely used in mature experimentation platforms and is high-value
-    for LLM features because user-behavior variance is large.
-- **No peeking / fixed horizon.** Repeatedly checking and stopping the moment p < 0.05
-  inflates false positives massively. Either fix the duration up front and test only at
-  the end, or use a **sequential testing** method explicitly designed for continuous
-  monitoring — e.g., **always-valid p-values / confidence sequences**, **group sequential
-  tests** (O'Brien-Fleming-style boundaries), or a **Sequential Probability Ratio Test
-  (SPRT)** — which keep the false-positive rate controlled *even though* you look
-  repeatedly, at the cost of slightly less power per look.
 - **Randomization unit.** Randomize by *user* (or session), not by *request* — the same
   user hitting both variants pollutes the comparison and breaks the user experience.
 - **Novelty / primacy effects.** Run long enough for the initial-reaction bump to settle.
 - **Variance from non-determinism.** LLM outputs vary run-to-run; this adds noise — budget
   for it in your sample size.
+- **No peeking / fixed horizon.** Repeatedly checking and stopping the moment p < 0.05
+  inflates false positives massively. Either fix the duration up front and test only at
+  the end, or use a **sequential testing** method explicitly designed for continuous
+  monitoring (the *concept* — the named methods are in the deep dive). Sequential
+  methods keep the false-positive rate controlled *even though* you look repeatedly, at
+  the cost of slightly less power per look.
+
+You also need a **significance test** — whether a 2-point lift is real or noise depends
+on a proper hypothesis test, not eyeballing. The right test depends on the metric type
+(proportion vs. continuous); the test taxonomy lives in the deep dive.
 
 **Rollout discipline.** A/B test is usually preceded by a **canary** (route a tiny 1–5%
 slice to B, watch guardrail metrics for breakage) and followed by a **gradual ramp**
@@ -1093,26 +1088,25 @@ The full loop: offline eval gates the change into a canary → A/B test measures
 impact → ramp or roll back → online failures feed back into the offline eval set. Offline
 and online are one system, not alternatives.
 
-### Key terms
+### Overview — Key terms
 
 - **A/B test** — splitting live traffic between a control and a treatment to compare metrics on real users.
 - **Outcome metric** — a metric tied to real value (resolution rate, retention) vs. a proxy.
 - **Guardrail metric** — a metric (latency, cost, error rate) that must not regress even if quality improves.
 - **Statistical power / minimum detectable effect** — the test's ability to detect a real difference of a given size.
-- **Two-proportion z-test** — the standard significance test for comparing a rate/proportion metric between two variants.
-- **CUPED** — a variance-reduction technique using pre-experiment data as a covariate to shrink confidence intervals and reach significance faster.
-- **Sequential testing** — methods (always-valid p-values, group sequential tests, SPRT) that keep the false-positive rate controlled despite repeated checking.
 - **Peeking** — repeatedly checking results and stopping early, which inflates false positives.
+- **Fixed-horizon test** — pre-commit the sample size / duration and only evaluate at the end.
+- **Sequential testing (concept)** — a family of methods that keep the false-positive rate controlled despite repeated checking; specific methods are in the deep dive.
 - **Randomization unit** — the entity (user/session) assigned to a variant.
 - **Canary / gradual ramp** — routing a small slice first, then increasing exposure incrementally.
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ "Winning the offline eval means it's better in production." → ✅ Offline eval is bounded by your dataset and judge; only an A/B test on real users with outcome metrics confirms real impact.
 - ❌ "Stop the test as soon as p < 0.05." → ✅ Peeking and early stopping inflate false positives; fix the horizon up front or use sequential-testing methods.
 - ❌ "Randomize per request to get more data points." → ✅ Randomize per user/session; per-request assignment pollutes the comparison and gives users an inconsistent experience.
 
-### Worked example
+### Overview — Worked example
 
 A team's new prompt scores +6% on the offline judge eval. They A/B test before full
 rollout.
@@ -1128,12 +1122,133 @@ rollout.
   few abandoned real conversations to the eval set, so the offline eval now predicts
   production better.
 
-### Check questions
+### Overview — Check questions
 
 1. A change wins your offline judge eval by a clear margin. Describe a concrete, realistic way it could still be a net negative in production despite that win. — **Answer:** The offline judge measures the judge's notion of quality, not real outcomes. A realistic failure: the change makes answers longer and more thorough, which the judge (with verbosity bias) scores higher — but real users won't read long answers, so task-completion falls and abandonment rises. The offline eval and the judge are both bounded; only an A/B test on real users with outcome metrics reveals this.
 2. A team checks their A/B dashboard every morning and plans to ship the moment p < 0.05 appears. Statistically, what does this practice do to their results, and what is the correct alternative? — **Answer:** Repeatedly checking and stopping at the first significant-looking moment ("peeking") massively inflates the false-positive rate — given enough looks, a null effect will cross p < 0.05 by chance. Correct alternative: fix the sample size and test horizon in advance and only evaluate at the end, or use a sequential-testing method explicitly designed for continuous monitoring.
 3. An engineer randomizes A/B assignment per *request* "to get more data points faster." Name two distinct problems this causes. — **Answer:** (1) It pollutes the comparison: the same user is served both variants, so their behavior reflects a blend of A and B rather than a clean exposure to one — the variants are no longer cleanly contrasted. (2) It breaks the user experience: a user sees the product behave inconsistently from request to request. Randomization must be by user (or session) so each user has one coherent, attributable experience.
-4. Your treatment lifts the support-resolution *rate* from 71% to 73%. You need to know whether that 2-point lift is real, and your test is underpowered for the sample you can collect in a reasonable window. Name the appropriate significance test for this metric, and name one technique that could let you reach significance faster without simply running longer. — **Answer:** Resolution rate is a proportion (each user resolved or not), so the appropriate test is a **two-proportion z-test** (equivalently a chi-squared test) — it checks whether the gap between the two success proportions exceeds sampling noise. To reach significance faster without extending the run, apply **CUPED**: use each user's pre-experiment behavior as a covariate to subtract out predictable user-to-user variance, which shrinks the confidence interval so the same true effect becomes detectable with less data. (Sequential testing would let you check repeatedly without inflating false positives, but it does not by itself reduce the variance.)
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview said "use the right significance test for your metric" and "use a sequential
+method if you must monitor continuously," but kept the test names and the variance-reduction
+mechanics out of view. This section unpacks them. It is interview-bait — A/B-test mechanics
+get asked about in PM and senior engineering interviews — but it is **not required** to
+advance and is not in the topic exam.
+
+**The significance-test taxonomy — which test by metric type.** Don't eyeball a 2%
+difference; run a proper hypothesis test, and the *kind* of metric dictates which one:
+
+- For a **rate / proportion** metric (resolution rate, thumbs-up rate, click-through —
+  each user is a success/failure) the standard test is a **two-proportion z-test**
+  (equivalently a chi-squared test): it asks whether the difference between A's and B's
+  success proportions is larger than sampling noise would produce.
+- For a **continuous** metric (latency, time-to-resolution, tokens per session, revenue
+  per user) use a **t-test** — specifically **Welch's t-test**, which does not assume
+  equal variances — on the per-user means. If the metric is heavily skewed (e.g., revenue
+  with a few huge spenders), use the non-parametric **Mann-Whitney U** test, which
+  compares rank distributions and is robust to outliers.
+
+Picking the wrong test gives you a p-value that means something different from what you
+think it means.
+
+**CUPED — variance reduction, not a different test.** **CUPED** (Controlled-experiment
+Using Pre-Experiment Data) is a *variance-reduction* technique that runs alongside whatever
+significance test you chose. The mechanism: for each user you already have a *pre-experiment*
+behavior measurement (their resolution rate or revenue in the weeks before the test
+started). That pre-experiment value is highly predictive of their post-experiment value,
+yet has nothing to do with the treatment (the treatment didn't exist yet). So you regress
+the post-experiment metric on the pre-experiment metric as a **covariate** and analyze the
+*residuals* — the part of each user's behavior not explained by their baseline. The treatment
+effect estimate is unchanged in expectation, but the noise around it shrinks because predictable
+user-to-user variance has been subtracted out. Concretely the confidence interval narrows,
+so the same true effect becomes detectable with a smaller sample or a shorter run. CUPED is
+high-value for LLM features specifically because user-behavior variance is large and the
+historical signal is strong; mature experimentation platforms (Microsoft, Netflix, Booking)
+use it as a default.
+
+**Named sequential methods.** "Sequential testing" in the Overview is a family. The named
+members you should recognize:
+
+- **Always-valid p-values / confidence sequences.** Define a p-value that remains valid
+  *at every look* throughout the experiment — you can check at any time, stop the moment
+  it crosses your threshold, and the false-positive rate is still bounded. The math is
+  martingale-based; the user-facing property is "peek as often as you want, the result is
+  honest."
+- **Group sequential tests (O'Brien-Fleming-style boundaries).** Plan a small number of
+  *interim looks* in advance (say, at 25%, 50%, 75%, 100% of horizon) and use *stricter*
+  significance thresholds at the early looks than the final one. O'Brien-Fleming
+  boundaries are the canonical example — very strict early, near-nominal at the end — so
+  early stops only happen on overwhelmingly strong evidence.
+- **SPRT (Sequential Probability Ratio Test).** The original sequential method (Wald):
+  after each observation, compute the likelihood ratio between H₀ and H₁; stop and accept
+  H₁ when it crosses an upper boundary, accept H₀ when it crosses a lower boundary,
+  continue otherwise. Optimal in expected sample size for testing one simple alternative.
+
+All three control the false-positive rate *despite* repeated checking, at the cost of
+slightly less power per look than a fixed-horizon test of the same total sample size.
+
+### Deep dive — Key terms
+
+- **Two-proportion z-test (≡ chi-squared)** — the significance test for comparing a
+  rate/proportion metric between two variants.
+- **Welch's t-test** — t-test for two means that does not assume equal variances; the
+  standard continuous-metric test.
+- **Mann-Whitney U** — non-parametric rank-based test for two distributions; use when a
+  continuous metric is heavily skewed.
+- **CUPED** — variance-reduction technique using pre-experiment behavior as a covariate
+  to subtract out predictable user variance; shrinks the confidence interval without
+  changing the estimator in expectation.
+- **Covariate** — a known-irrelevant-to-treatment variable used to explain away variance.
+- **Always-valid p-values / confidence sequences** — sequential method that remains valid
+  at every look; peek freely.
+- **Group sequential test (O'Brien-Fleming)** — pre-planned interim looks with stricter
+  early thresholds.
+- **SPRT** — Wald's likelihood-ratio sequential test with upper/lower stop boundaries.
+
+### Deep dive — Common misconceptions
+
+- ❌ "A t-test works for any metric." → ✅ A t-test is for *continuous* metrics; for a
+  rate/proportion (success/failure per user) use a two-proportion z-test, and for a
+  heavily skewed continuous metric use Mann-Whitney U.
+- ❌ "CUPED is its own significance test." → ✅ CUPED is a variance-reduction wrapper that
+  runs alongside your chosen test (z-test, t-test, etc.) — it shrinks the confidence
+  interval; the significance test still has to be the right one for the metric.
+- ❌ "Sequential methods are free — just use them so you can peek." → ✅ They control
+  false positives despite repeated looks, but each look pays a small power tax; on a
+  pre-decided fixed-horizon test the fixed-horizon design has more power per data point.
+
+### Deep dive — Worked example
+
+Your treatment lifts support-resolution *rate* from 71% to 73%. You need to know whether
+that 2-point lift is real, and the test is underpowered for the sample you can collect
+in a reasonable window.
+
+1. **Pick the test by metric type.** Resolution rate is a proportion (each user resolved
+   or not), so the right significance test is a **two-proportion z-test** (equivalently
+   a chi-squared test). A t-test would be wrong: the metric is not a per-user continuous
+   mean. Mann-Whitney U would be wrong too: the metric is Bernoulli, not a skewed
+   continuous.
+2. **Reduce variance with CUPED.** You have each user's pre-experiment resolution rate
+   from the weeks before the test. Regress post on pre per user, take residuals, and run
+   the z-test on the residuals. The point estimate of the 2-point lift is unchanged in
+   expectation, but the confidence interval shrinks because much of the user-to-user
+   variation was already explained by the baseline. The same true 2-point lift now
+   crosses significance with materially less data.
+3. **Pick the monitoring discipline.** If you must monitor continuously and want the
+   option to stop early, use a sequential method — e.g., O'Brien-Fleming group sequential
+   with interim looks at 25/50/75/100% (early thresholds very strict, final near-nominal),
+   or an always-valid p-value if you want to peek freely. Either keeps the false-positive
+   rate honest; either pays a small per-look power tax compared to a fixed-horizon design
+   of the same total size. *Sequential testing is not a substitute for CUPED* — they
+   address different problems (monitoring discipline vs. variance), and they compose.
+
+### Deep dive — Check questions
+
+1. Your treatment lifts the support-resolution *rate* from 71% to 73%. You need to know whether that 2-point lift is real, and your test is underpowered for the sample you can collect in a reasonable window. Name the appropriate significance test for this metric, and name one technique that could let you reach significance faster without simply running longer. — **Answer:** Resolution rate is a proportion (each user resolved or not), so the appropriate test is a **two-proportion z-test** (equivalently a chi-squared test) — it checks whether the gap between the two success proportions exceeds sampling noise. To reach significance faster without extending the run, apply **CUPED**: use each user's pre-experiment behavior as a covariate to subtract out predictable user-to-user variance, which shrinks the confidence interval so the same true effect becomes detectable with less data. (Sequential testing would let you check repeatedly without inflating false positives, but it does not by itself reduce the variance.)
+2. A team running an A/B test of revenue-per-user wants to monitor the dashboard daily and stop early if the result is conclusive, *without* inflating their false-positive rate. They also want to know which significance test fits the revenue metric, which is heavily right-skewed by a handful of huge spenders. Recommend a significance test and a monitoring method, and explain why a vanilla t-test plus daily peeking would be wrong on both counts. — **Answer:** Revenue-per-user is a continuous metric and heavily skewed, so a Welch's t-test (which assumes roughly mean-normal behavior) is fragile here; the appropriate test is the **Mann-Whitney U** test, which compares rank distributions and is robust to outliers (a vanilla t-test would be unduly swayed by the few huge spenders). For monitoring, use a **sequential method** — e.g., an **always-valid p-value / confidence sequence** if they want to peek at any cadence, or a **group sequential** design with **O'Brien-Fleming** boundaries (stricter early thresholds, near-nominal final) if interim looks are pre-planned. Daily peeking with a fixed-horizon p-value massively inflates the false-positive rate because given enough looks a null effect will eventually cross p<0.05 by chance; the sequential methods control that rate at the cost of slightly less power per look.
 
 ---
 
@@ -1275,10 +1390,10 @@ mark 85.
 7. Why is randomizing an A/B test by *request* rather than by *user* a methodological error?
    A) It produces fewer data points  B) The same user is served both variants, blending their behavior and giving an inconsistent UX  C) It is computationally slower  D) Statistical tests forbid it outright
    — **Answer:** B. Per-request assignment exposes one user to both variants, so their behavior no longer cleanly attributes to A or B, and the product behaves inconsistently for them.
-9. An A/B test compares the *thumbs-up rate* of two prompt variants. Which is the appropriate significance test, and which named technique reduces variance so significance can be reached with a smaller sample?
+9. [deep-dive] An A/B test compares the *thumbs-up rate* of two prompt variants. Which is the appropriate significance test, and which named technique reduces variance so significance can be reached with a smaller sample?
    A) A t-test; bootstrapping  B) A two-proportion z-test; CUPED  C) Cohen's kappa; Hyperband  D) BERTScore; sequential testing
    — **Answer:** B. Thumbs-up rate is a proportion, so a two-proportion z-test (or chi-squared) is the right significance test. CUPED uses pre-experiment user data as a covariate to subtract out predictable variance, shrinking the confidence interval so the same effect is detectable with less data. (Cohen's kappa measures annotator agreement; BERTScore is an output metric; neither is an A/B test.)
-10. A team monitors their A/B dashboard continuously and wants to be able to stop as soon as the data is conclusive — without inflating false positives. Which approach makes that statistically valid?
+10. [deep-dive] A team monitors their A/B dashboard continuously and wants to be able to stop as soon as the data is conclusive — without inflating false positives. Which approach makes that statistically valid?
    A) Just lower the significance threshold to p < 0.01  B) Use a sequential testing method (always-valid p-values / group sequential tests / SPRT) designed for repeated looks  C) Average the daily p-values  D) Switch the randomization unit to per-request
    — **Answer:** B. Sequential testing methods control the false-positive rate *despite* repeated checking, at a small cost in per-look power, so the team can legitimately stop early. A fixed lower threshold does not fix the peeking problem; averaging p-values is not a valid procedure; randomization unit is unrelated.
 8. A team reports 96% raw agreement between two annotators on a binary label and calls the labels reliable. The hidden problem is most likely:

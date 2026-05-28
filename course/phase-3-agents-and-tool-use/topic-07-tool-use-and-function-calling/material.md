@@ -724,7 +724,15 @@ Now the boundary is explicit and routing becomes consistent.
 
 ## 7.8 — MCP (Model Context Protocol): what it is, why it exists, client/server model
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §7.9. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 Tool use solves *how* a model requests an action. But every team that wired up tools
 faced the same problem: **every integration was bespoke.** Connecting Claude to GitHub,
@@ -737,7 +745,7 @@ docs describe it as **"a USB-C port for AI applications"**: a single standard pl
 a capability once; any MCP-compatible **client** (Claude Desktop, Claude Code, Cursor,
 and others) can use it without custom glue.
 
-**Client/server architecture.** MCP uses a client–server model over **JSON-RPC 2.0**:
+**Client/server architecture.** MCP uses a client–server model:
 
 - **Host** — the AI application the user interacts with (e.g. Claude Desktop, an IDE).
 - **Client** — a connector inside the host; the host spins up one MCP client per server,
@@ -754,13 +762,6 @@ and others) can use it without custom glue.
 3. **Prompts** — reusable, parameterized prompt templates the user can invoke (e.g. a
    "review this code" template). User-controlled.
 
-**Transports.** Two standard transports: **stdio** for local servers (host launches the
-server as a subprocess, communicates over standard input/output) and **Streamable HTTP**
-for remote servers. [5][6] The choice is structural: stdio means the server is a local
-subprocess of the host (low-latency, no network, single host); Streamable HTTP means the
-server is a network service that multiple hosts can share. (MCP uses dated spec revisions;
-the current Streamable HTTP transport supersedes an earlier HTTP+SSE transport. [6])
-
 **Why it matters in practice.** MCP decouples *tool/capability development* from *AI
 application development*. A vendor ships one MCP server; every MCP-aware client gets the
 integration for free. It also standardizes discovery — a client can ask a server "what
@@ -770,28 +771,25 @@ hardcoded.
 **Caveats.** MCP is plumbing, not magic. (1) **Security**: connecting an MCP server means
 trusting it — a malicious server can ship malicious tool descriptions ("tool poisoning"),
 and MCP tool results are untrusted external content (indirect injection risk, the lethal
-trifecta — Topic 13). Current MCP auth classifies remote servers as OAuth 2.1 resource
-servers and requires Resource Indicators (RFC 8707) so a token issued for one server
-cannot be replayed against another. [7][8] (2) **Token cost**: every connected server's
-tool definitions go into context; connecting many servers bloats the prompt. (3) MCP
-standardizes the *interface*; you still design good tools, descriptions, and guardrails.
+trifecta — Topic 13). (2) **Token cost**: every connected server's tool definitions go
+into context; connecting many servers bloats the prompt. (3) MCP standardizes the
+*interface*; you still design good tools, descriptions, and guardrails.
 
-### Key terms
+### Overview — Key terms
 
-- **MCP (Model Context Protocol)** — open standard for connecting AI applications to external tools/data via a client–server protocol over JSON-RPC 2.0.
+- **MCP (Model Context Protocol)** — open standard for connecting AI applications to external tools/data via a client–server protocol.
 - **Host / Client / Server** — the host is the AI app; it runs a client per server; servers expose capabilities.
 - **Primitives: Tools / Resources / Prompts** — invokable functions (model-controlled), readable data (app-controlled), prompt templates (user-controlled).
-- **stdio / Streamable HTTP** — MCP transports for local and remote servers respectively.
 - **N×M → N+M** — the integration-explosion problem MCP solves: standard interface means each tool and each app implement the protocol once.
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ "MCP is an Anthropic-only or Claude-only thing." → ✅ It is an open, vendor-neutral standard adopted across many clients and providers.
 - ❌ "MCP replaces function calling." → ✅ MCP is a *standardized transport and discovery layer* around tool use; the underlying request/execute mechanism is the same.
 - ❌ "Connecting an MCP server is safe by default." → ✅ A server you connect is trusted code/content; malicious or compromised servers are a real attack surface — vet servers and treat their output as untrusted.
 - ❌ "MCP servers only expose tools." → ✅ They expose three primitives: tools, resources, and prompts.
 
-### Worked example
+### Overview — Worked example
 
 Without MCP: your IDE assistant, Claude Desktop, and a CLI agent each need separate,
 custom code to talk to your Postgres database — three integrations to write and maintain.
@@ -799,8 +797,7 @@ custom code to talk to your Postgres database — three integrations to write an
 With MCP: you write one `postgres-mcp-server` exposing a `query` tool and table
 **resources**. You register it in each host's config. Now all three hosts can query the
 database through the same server. Ship a new tool on the server and every client gets it
-on next connect — no client-side code change. Transport: `stdio` if the server runs
-locally beside the host, Streamable HTTP if it's a shared remote service.
+on next connect — no client-side code change.
 
 The structural change MCP makes — fully-meshed bespoke glue (N×M) becomes a hub (N+M):
 
@@ -831,11 +828,133 @@ The structural change MCP makes — fully-meshed bespoke glue (N×M) becomes a h
 Each app implements the MCP client once; each service ships one MCP server. Adding a
 fourth app costs one connector, not three.
 
-### Check questions
+### Overview — Check questions
 
 1. A startup has 4 AI applications and wants each to integrate with 5 backend services. Quantify the integration work with and without MCP, and explain what MCP changes structurally. — **Answer:** Without MCP each (app, service) pair needs bespoke glue: 4 × 5 = 20 integrations. With MCP each service ships one MCP server and each app implements the client once: 5 + 4 = 9. MCP turns an N×M explosion into N+M by decoupling capability development from application development behind one standard interface — the structural change, not just a smaller number.
 2. A developer wants to expose a "review this PR" capability that the *user* explicitly invokes from a menu, and a set of repo files the *host* loads into context as needed. Which MCP primitive is each, and which one would be wrong for a model-decided action? — **Answer:** "Review this PR" is a **Prompt** — a parameterized template, user-controlled. The repo files are **Resources** — readable data, application/host-controlled. The third primitive, **Tools**, is the model-controlled one for actions the model decides to invoke; using a Tool for a fixed user-menu template or for host-managed context would mis-assign control. The primitives differ by *who controls invocation*.
 3. Two claims: "MCP replaces function calling" and "connecting a vetted-looking MCP server is safe." Explain why each is wrong. — **Answer:** "Replaces function calling" is wrong because MCP is a standardized *transport and discovery layer* around tool use — the underlying request/execute mechanism (model emits a request, your side executes) is unchanged; MCP just standardizes how tools are described and discovered. "Safe by default" is wrong because connecting a server is a trust decision: a malicious or compromised server can ship poisoned tool descriptions ("tool poisoning") and return untrusted content that carries indirect injections. Vet servers and treat their output as untrusted regardless of appearance.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview described MCP at the architectural level — host/client/server, three
+primitives, the N×M→N+M structural win. This section drops to the wire: the exact
+protocol on the connection, the two transports and the historical one they replaced,
+how servers authenticate clients, and the precise discovery handshake at connect time.
+This is the layer you need to *implement* an MCP server or client (or audit one); it
+is interview-bait and **not required** to advance and not in the topic exam.
+
+**Wire protocol — JSON-RPC 2.0.** Every message on an MCP connection is a JSON-RPC
+2.0 object: a `method` name, a `params` object, a numeric `id` for request/response
+correlation, and either a `result` or `error` on the reply. The protocol is symmetric
+— either side can send requests — and stateful: the client and server hold a
+long-lived session, not a sequence of independent HTTP calls. JSON-RPC was chosen
+because it is small, language-neutral, and trivially bidirectional, which is what the
+host↔server interaction needs.
+
+**Capability discovery at connect time.** On session start the client and server
+exchange an `initialize` handshake declaring protocol version and supported
+capabilities. The client then issues `tools/list`, `resources/list`, and
+`prompts/list` to enumerate what this server offers — that is how "ask the server
+what it does" is implemented mechanically. Subsequent calls (`tools/call`,
+`resources/read`, `prompts/get`) invoke the discovered capabilities. The list calls
+are how a host can surface "newly-available tools on this server" without any
+client-side code change when the server is updated.
+
+**Transports — stdio and Streamable HTTP.** MCP standardizes two transports for the
+JSON-RPC frames:
+
+- **stdio** — the host launches the server as a local subprocess and exchanges
+  JSON-RPC messages over the server's standard input and standard output. Low
+  latency, no network, single host per server process. This is the right transport
+  for local capabilities (filesystem, local DB, dev tooling).
+- **Streamable HTTP** — the server is a network service; the client opens an HTTP
+  connection that supports server-initiated streaming (so the server can push
+  notifications back, not just respond to requests). This is the right transport for
+  shared/remote services that multiple hosts will connect to. [5][6]
+
+The choice is structural, not a tuning knob: stdio requires the server to be a
+subprocess of the host, which a shared remote service cannot be; Streamable HTTP is
+the only option for the multi-host case.
+
+**Dated spec revisions; the superseded HTTP+SSE transport.** MCP uses *dated* spec
+revisions (e.g. `2024-11-05`, `2025-03-26`) negotiated in the `initialize`
+handshake — a server and client agree on a version they both support. The current
+Streamable HTTP transport **supersedes** an earlier **HTTP+SSE** transport from
+older revisions: HTTP+SSE used a separate Server-Sent Events endpoint for the
+server→client direction, which complicated deployment and load balancing.
+Streamable HTTP folds bidirectional streaming into one endpoint. You will still see
+HTTP+SSE in older docs and older server implementations; modern clients support
+both for backward compatibility but the new direction is Streamable HTTP. [6]
+
+**Authorization — OAuth 2.1 resource servers + RFC 8707 Resource Indicators.** The
+current MCP authorization model classifies remote servers as **OAuth 2.1 resource
+servers**: the client obtains an OAuth 2.1 access token (from a separate
+authorization server) and presents it on requests to the MCP server. Critically, the
+spec **requires Resource Indicators (RFC 8707)** — the client must include a
+`resource` parameter naming the specific MCP server the token is intended for, and
+the authorization server binds the token to that resource. This prevents a token
+issued for server A from being replayed against server B if A is malicious or
+compromised — exactly the cross-server confused-deputy attack a multi-server MCP
+deployment would otherwise be vulnerable to. [7][8] The stdio transport, being a
+local subprocess, does not use OAuth; trust there is the OS-level "you launched
+this binary."
+
+### Deep dive — Key terms
+
+- **JSON-RPC 2.0** — the wire protocol MCP frames every message in; symmetric (either side can send requests), stateful, language-neutral.
+- **`initialize` handshake** — the session-start exchange where client and server agree on a dated protocol revision and declare capabilities.
+- **`tools/list`, `resources/list`, `prompts/list`** — the discovery calls a client issues after `initialize` to enumerate what the server offers.
+- **stdio transport** — host launches the server as a local subprocess; JSON-RPC over stdin/stdout. Low-latency, single-host.
+- **Streamable HTTP transport** — server is a network service; one HTTP endpoint supports bidirectional streaming so the server can push to the client. The modern remote transport.
+- **HTTP+SSE transport** — the older remote transport that used a separate Server-Sent Events endpoint for the server→client direction; superseded by Streamable HTTP but still seen in older deployments.
+- **Dated spec revision** — MCP versions itself by date (e.g. `2025-03-26`); the `initialize` handshake negotiates a revision both sides support.
+- **OAuth 2.1 resource server** — the authorization model for remote MCP servers: clients present access tokens obtained from a separate auth server.
+- **RFC 8707 Resource Indicators** — required field that binds an OAuth token to a specific MCP server so it cannot be replayed against a different server.
+
+### Deep dive — Common misconceptions
+
+- ❌ "MCP is REST-like — one request, one response." → ✅ MCP is JSON-RPC 2.0 over a long-lived, stateful session; either side can send requests, and discovery and notifications depend on that bidirectionality.
+- ❌ "Streamable HTTP and HTTP+SSE are the same thing." → ✅ HTTP+SSE was the older two-endpoint design (separate SSE endpoint for server→client); Streamable HTTP is the newer single-endpoint bidirectional transport that superseded it.
+- ❌ "An OAuth token I have for one MCP server lets me talk to any MCP server." → ✅ The required RFC 8707 Resource Indicator binds the token to a specific server; tokens are not transferable across servers, which is the whole point of the protection.
+- ❌ "MCP versioning is semver." → ✅ It uses dated spec revisions negotiated in the `initialize` handshake.
+
+### Deep dive — Worked example
+
+Trace a single session from connect to first tool call, end-to-end:
+
+1. **Transport setup.** Client opens the transport. For a local `postgres-mcp-server`,
+   the host spawns it as a subprocess and pipes stdio. For a hosted SaaS server, the
+   client opens a Streamable HTTP connection and (if a remote/protected server)
+   completes OAuth 2.1: it requests an access token from the authorization server,
+   passing `resource=https://saas-mcp.example.com` per RFC 8707 so the issued token
+   is bound to that specific server.
+2. **`initialize`.** Client sends a JSON-RPC `initialize` request declaring its
+   protocol revision (e.g. `2025-03-26`) and capabilities. Server replies with its
+   supported revision and declared capabilities (e.g. "I expose tools and resources,
+   not prompts").
+3. **Discovery.** Client sends `tools/list`; server returns the available tool
+   definitions. Client sends `resources/list`; server returns the readable resources.
+   These results are how the host now knows what tools to surface to the model and
+   what resources it can load into context — without any hardcoded knowledge.
+4. **Invocation.** When the model emits a `tool_use` for `query`, the client sends a
+   JSON-RPC `tools/call` request with `name: "query"` and the arguments; the server
+   executes and returns the result on the same connection. For Streamable HTTP, that
+   same connection is what would let the server push a progress notification mid-call
+   if the protocol revision supports it.
+
+If you tried to short-circuit any of this — skip `initialize`, hardcode the tool
+list, or omit the RFC 8707 `resource` parameter — you would either fail the
+handshake, miss capabilities the server actually offers, or open the deployment to
+cross-server token replay. The handshake and discovery are not ceremony; they are
+what make the standard work.
+
+### Deep dive — Check questions
+
+1. A team finds a tutorial that wires their MCP server using "HTTP+SSE" and another that says "Streamable HTTP." Are these the same transport, and what should they use today on a new remote MCP server? — **Answer:** They are *not* the same. HTTP+SSE was an earlier MCP remote transport that used a separate Server-Sent Events endpoint for the server→client direction (two endpoints, harder to deploy and load-balance). The current spec **supersedes** it with **Streamable HTTP**, which folds bidirectional streaming into a single endpoint. A new remote MCP server today should use Streamable HTTP; HTTP+SSE only appears in older revisions and is kept around for backward compatibility with older clients. Note also that MCP spec versions are dated revisions negotiated in the `initialize` handshake — so "which transport" is partly a function of which revision both sides agreed on.
+2. A multi-tenant deployment runs MCP servers A and B. A is later found to be malicious. Why does the current MCP authorization model prevent a token issued to a client for server A from being replayed against server B, and what specifically is the spec requirement? — **Answer:** The current MCP auth treats remote servers as **OAuth 2.1 resource servers**, and the spec **requires Resource Indicators (RFC 8707)**: when the client requests an access token it must pass a `resource` parameter naming the specific server (e.g. `resource=https://server-a.example.com`), and the authorization server binds the issued token to that resource. Server B is required to reject a token whose bound resource is not itself, so a token captured by malicious server A cannot be replayed against B. Without RFC 8707, the same access token could be presented to any MCP server — a classic cross-resource confused-deputy attack — which is exactly what the requirement closes.
+3. An engineer writes a client that connects to an MCP server, immediately calls `tools/call` for a tool it hardcoded the name of, and skips the `initialize` step "to save a round-trip." Two distinct things this breaks — name them. — **Answer:** (1) **Protocol-revision negotiation:** `initialize` is where the client and server agree on a dated spec revision both support; skipping it means the client has no agreement on which revision's semantics (capabilities, message shapes) are in force, and the server is entitled to reject any further requests on a session that was never initialized. (2) **Capability discovery:** the client cannot know what the server *actually* exposes without `tools/list` (and `resources/list` / `prompts/list`); hardcoding the tool name re-introduces the bespoke-glue problem MCP exists to solve and breaks the moment the server adds, removes, or renames a tool. The handshake plus discovery is what makes the integration generic and forward-compatible.
 
 ---
 
@@ -1028,7 +1147,7 @@ A pool the tutor draws from for the gated exam. Mixed-format, scored /100, 85 to
    D. Remove one of the tools
    — **Answer:** C. Inconsistent tool selection is usually a description problem; disambiguate them.
 
-8. You are deploying an MCP server as a shared remote service that several teams' hosts will connect to over the network. Which transport applies, and why not the other?
+8. [deep-dive] You are deploying an MCP server as a shared remote service that several teams' hosts will connect to over the network. Which transport applies, and why not the other?
    A. stdio — the host launches the server as a subprocess
    B. Streamable HTTP — stdio requires the server to run as a local subprocess of the host, which a shared remote service is not
    C. Either works identically for remote servers
@@ -1062,7 +1181,7 @@ A pool the tutor draws from for the gated exam. Mixed-format, scored /100, 85 to
 1. Explain why "the model only requests, you execute" is the most important concept in tool use, and walk through its safety implications. — **Model answer / rubric:** Should establish that a tool_use block is just tokens with no inherent power; nothing happens until the harness chooses to execute. Should explain the two consequences: (a) the request/execute gap is a mandatory checkpoint where you validate arguments, check permissions, require approval, sandbox, or refuse; (b) the request must never be treated as authorization because it can be wrong or injection-driven. Should connect to defense in depth, least privilege, deterministic enforcement below the model, and the "treat the LLM as an untrusted user" mental model. Strong answers give a concrete injection example.
 2. Compare the four `tool_choice` modes and explain when each is appropriate, including the trade-off of forcing a tool. — **Model answer / rubric:** Using Anthropic's naming (the modes and names are provider-specific): `auto` (default) — model decides; for general agents/assistants. `any` (OpenAI: `required`) — must call some tool; for routing/classification where every turn must produce an action. `tool`/named-function — forces one named tool; for guaranteed structured output or skipping a known decision. `none` — text only; for final summaries or ending a loop. Trade-off: on Anthropic, forcing `any` or a specific tool prefills the assistant turn so the model cannot emit a reasoning/text block first, and forced tool use is incompatible with extended thinking; mitigations include using `auto` (and instructing the tool in a user message) or adding a `reasoning` field to the schema. Strong answers note that the exact behavior is provider- and model-specific. Key principle: more constraint = less model judgment about appropriateness.
 3. Describe what makes a tool description effective and why tool descriptions should be treated as code. — **Model answer / rubric:** Should state the description is the model's only information about the tool — the model never sees source code — so it functions as a prompt. Effective descriptions cover: what the tool does, when to use and not use it, what it returns, constraints/preconditions, and what to do when info is missing; plus per-property descriptions with formats and examples, and enums to limit choices. Treating descriptions as code: they belong in version control, must be regression-eval'd because a description change is a behavior change, should be iterated empirically against real failures, and should disambiguate overlapping tools. Should also note token cost — descriptions are billed every call, so be thorough but not bloated.
-4. A team is deciding whether to adopt MCP for an internal platform with several AI applications and many backend services. Make the case for and against, and explain what MCP does and does *not* solve. Cover the architecture and primitives only insofar as they support your argument, and address the security implications of adopting it. — **Model answer / rubric:** *For:* the platform faces an N×M integration explosion; MCP's standard client–server protocol over JSON-RPC 2.0 (host runs one client per server; servers expose Tools, Resources, Prompts) turns that into N+M, decouples capability development from app development, and standardizes discovery so capabilities are not hardcoded. Transports fit both shapes — stdio for local servers, Streamable HTTP for remote/shared services. *Against / limits:* MCP is plumbing, not magic — it standardizes the *interface* but you still must design good tools, descriptions, and guardrails; it adds protocol overhead that a single fixed-tool app may not need; every connected server's tool definitions consume context tokens, so connecting many servers bloats the prompt. *Security:* connecting a server is a trust decision — a malicious server can ship poisoned tool descriptions, and server output is untrusted external content (indirect injection, lethal trifecta); MCP's current authorization model treats remote servers as OAuth 2.1 resource servers and requires Resource Indicators (RFC 8707) so tokens can't be replayed across servers. Strong answers reach a calibrated recommendation (adopt, because the platform is genuinely N×M) rather than a generic description.
+4. [deep-dive] A team is deciding whether to adopt MCP for an internal platform with several AI applications and many backend services. Make the case for and against, and explain what MCP does and does *not* solve. Cover the architecture and primitives only insofar as they support your argument, and address the security implications of adopting it. — **Model answer / rubric:** *For:* the platform faces an N×M integration explosion; MCP's standard client–server protocol over JSON-RPC 2.0 (host runs one client per server; servers expose Tools, Resources, Prompts) turns that into N+M, decouples capability development from app development, and standardizes discovery so capabilities are not hardcoded. Transports fit both shapes — stdio for local servers, Streamable HTTP for remote/shared services. *Against / limits:* MCP is plumbing, not magic — it standardizes the *interface* but you still must design good tools, descriptions, and guardrails; it adds protocol overhead that a single fixed-tool app may not need; every connected server's tool definitions consume context tokens, so connecting many servers bloats the prompt. *Security:* connecting a server is a trust decision — a malicious server can ship poisoned tool descriptions, and server output is untrusted external content (indirect injection, lethal trifecta); MCP's current authorization model treats remote servers as OAuth 2.1 resource servers and requires Resource Indicators (RFC 8707) so tokens can't be replayed across servers. Strong answers reach a calibrated recommendation (adopt, because the platform is genuinely N×M) rather than a generic description.
 
 ### Applied Scenario
 

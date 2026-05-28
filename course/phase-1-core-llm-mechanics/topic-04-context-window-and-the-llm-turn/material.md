@@ -712,7 +712,13 @@ process.
 
 ## 4.6 — Input vs. output token accounting
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short Overview that everyone needs (taught and tested normally), and
+> a longer Deep dive with the mechanism details (skip-by-default, available on
+> request). The Deep dive is interview-bait and worth doing eventually, but it is
+> not required to advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 Every LLM API call is billed in **two separate buckets**: **input tokens** (everything
 you send — system prompt, full message history, tool definitions, retrieved documents)
@@ -761,42 +767,13 @@ linearly. This is the core cost dynamic of long agent conversations.
 - **Verbose output is doubly costly** — expensive to generate at the 5× rate, then
   resent as input every following turn. Concise responses save twice.
 
-**Reasoning models and test-time compute.** A *reasoning model* (Topic 14) is trained to
-produce a long internal **chain of thought** — "thinking tokens" — *before* its visible
-answer. This is **test-time compute**: instead of (or in addition to) a bigger model,
-you spend more *inference* compute on a harder problem by letting the model generate
-more intermediate tokens. Those thinking tokens have direct, often surprising budget and
-latency consequences an engineer must plan for:
-
-- **Thinking tokens bill as output tokens** — at the expensive ~5× rate — even though
-  the user never sees most of them. A question with a 200-token visible answer can quietly
-  consume several *thousand* thinking tokens, so the bill is dominated by reasoning the
-  user cannot read. Cost is driven by *total* generated tokens, not answer length.
-- **Thinking tokens are sequential decode** (Topic 1.5), so they add real **latency**.
-  A reasoning model can take many seconds before the first visible token because it is
-  "thinking" first — TTFT as the user perceives it (first *visible* token) is inflated by
-  the entire thinking phase.
-- **Thinking budgets are a tunable knob.** Many reasoning APIs expose a *reasoning
-  effort* / thinking-token budget setting. Higher budget → better answers on hard
-  problems but more cost and latency; lower budget → cheaper and faster but weaker on
-  hard reasoning. Choosing this per workload (high for a thorny analysis, low or off for
-  a simple classification) is a real engineering decision.
-- **Thinking tokens usually do not persist into later turns' input.** Providers
-  commonly strip the prior turn's chain of thought from the resent history, so — unlike a
-  verbose *visible* answer — thinking tokens are typically billed once (as output) and
-  not re-billed as input every subsequent turn. Confirm the specific provider's behavior.
-- **`max_tokens` must budget for thinking.** If your output cap does not leave room for
-  the thinking phase *plus* the answer, generation can be cut off inside the reasoning,
-  before any visible answer appears — a `length` finish with an empty-looking response.
-
 The mental model: **input is cheap-per-token but accumulates relentlessly via resend;
-output is expensive-per-token and, once generated, also becomes resent input; and
-reasoning models add a third lever — thinking tokens — that you pay for at the output
-rate and wait for in latency, even though they are invisible.** Cost control means
-controlling *what you send*, *how much you ask the model to write*, and *how much you let
-it think*.
+output is expensive-per-token and, once generated, also becomes resent input.** Cost
+control means controlling *what you send* and *how much you ask the model to write*.
+(The Deep dive adds a third lever — reasoning models' "thinking tokens" — that changes
+the accounting in subtle ways an engineer using extended-thinking models must plan for.)
 
-### Key terms
+### Overview — Key terms
 
 - **Input tokens** — everything sent to the model (system prompt, full history, tool
   defs, retrieved content); the cheaper-per-token bucket.
@@ -808,16 +785,8 @@ it think*.
   grows roughly quadratically because each turn resends a longer history.
 - **Token accounting** — computing total cost as the sum over every call of
   input×input-rate + output×output-rate.
-- **Thinking / reasoning tokens** — the intermediate chain-of-thought a reasoning model
-  generates before its visible answer; billed as output tokens and adding latency, even
-  though the user does not see them.
-- **Test-time compute** — spending more inference compute on a problem by generating
-  more intermediate (thinking) tokens, rather than by using a larger model.
-- **Reasoning effort / thinking budget** — a tunable cap on how many thinking tokens a
-  reasoning model may spend; trades answer quality on hard problems against cost and
-  latency.
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ Input and output tokens cost the same → ✅ Output is typically ~5× input on current
   frontier models.
@@ -827,13 +796,8 @@ it think*.
   (resent history) usually dominates, growing roughly quadratically with turns.
 - ❌ Cost is the input/output of the last call only → ✅ Cost is the sum over *every*
   API call in the interaction, including all prior turns and tool round-trips.
-- ❌ A reasoning model's cost tracks the length of its visible answer → ✅ It tracks
-  *total* generated tokens; the invisible thinking tokens bill at the output rate and can
-  dwarf the answer.
-- ❌ Thinking tokens are free or instantaneous → ✅ They are sequential decode — billed
-  as output and adding real latency before the first visible token appears.
 
-### Worked example
+### Overview — Worked example
 
 Claude Sonnet 4.6 ($3 input / $15 output per million tokens). One call: 12,000 input
 tokens, 800 output tokens. Cost = 12,000/1e6 × $3 + 800/1e6 × $15 = $0.036 + $0.012 =
@@ -870,7 +834,7 @@ The two billing buckets compared:
 | Billed how many times | Once per turn it is resent — so a long prefix is billed many times | Once, on the turn it is generated |
 | Re-billed as input? | Already input | Yes — a past assistant reply is resent as *input* on every later turn |
 
-### Check questions
+### Overview — Check questions
 
 1. The input/output price gap (e.g. Anthropic's 5×) is sometimes assumed to be a
    business choice — "providers just want to discourage long answers." Give the
@@ -899,7 +863,120 @@ The two billing buckets compared:
    is billed again at the *input* rate on turns 4 through 12 — nine more times. So: once
    at output rate, nine times at input rate. This is why verbose responses are "doubly
    costly" — expensive to generate, then repeatedly re-billed as input.
-4. A team switches a feature to a reasoning model and the per-request bill triples even
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview covered the base accounting model: two buckets, output ~5× input, and
+cumulative input that grows quadratically with turns via append-and-resend. **Reasoning
+models** (extended-thinking models — Claude with extended thinking, OpenAI's o-series,
+DeepSeek-R1, etc.; full treatment in Topic 14) add a third dimension to the accounting
+that an engineer using them must understand. This section unpacks it. It is
+interview-bait (anyone shipping an extended-thinking feature will be asked about cost
+and latency planning) but is **not required** to advance and is not in the topic exam.
+
+**Reasoning models and test-time compute.** A *reasoning model* is trained to produce a
+long internal **chain of thought** — "thinking tokens" — *before* its visible answer.
+This is **test-time compute**: instead of (or in addition to) a bigger model, you spend
+more *inference* compute on a harder problem by letting the model generate more
+intermediate tokens. Those thinking tokens have direct, often surprising budget and
+latency consequences:
+
+- **Thinking tokens bill as output tokens** — at the expensive ~5× rate — even though
+  the user never sees most of them. A question with a 200-token visible answer can quietly
+  consume several *thousand* thinking tokens, so the bill is dominated by reasoning the
+  user cannot read. Cost is driven by *total* generated tokens, not answer length.
+- **Thinking tokens are sequential decode** (Topic 1.5), so they add real **latency**.
+  A reasoning model can take many seconds before the first visible token because it is
+  "thinking" first — TTFT as the user perceives it (first *visible* token) is inflated by
+  the entire thinking phase.
+- **Thinking budgets are a tunable knob.** Many reasoning APIs expose a *reasoning
+  effort* / thinking-token budget setting. Higher budget → better answers on hard
+  problems but more cost and latency; lower budget → cheaper and faster but weaker on
+  hard reasoning. Choosing this per workload (high for a thorny analysis, low or off for
+  a simple classification) is a real engineering decision.
+- **Thinking tokens usually do not persist into later turns' input.** Providers
+  commonly strip the prior turn's chain of thought from the resent history, so — unlike a
+  verbose *visible* answer — thinking tokens are typically billed once (as output) and
+  not re-billed as input every subsequent turn. Confirm the specific provider's behavior.
+- **`max_tokens` must budget for thinking.** If your output cap does not leave room for
+  the thinking phase *plus* the answer, generation can be cut off inside the reasoning,
+  before any visible answer appears — a `length` finish with an empty-looking response.
+
+The augmented mental model: **input is cheap-per-token but accumulates relentlessly via
+resend; output is expensive-per-token and, once generated, also becomes resent input;
+and reasoning models add a third lever — thinking tokens — that you pay for at the
+output rate and wait for in latency, even though they are invisible** (and typically
+*not* resent as input, unlike a visible answer). Cost control with a reasoning model
+means controlling *what you send*, *how much you ask the model to write*, and *how much
+you let it think*.
+
+### Deep dive — Key terms
+
+- **Thinking / reasoning tokens** — the intermediate chain-of-thought a reasoning model
+  generates before its visible answer; billed as output tokens and adding latency, even
+  though the user does not see them.
+- **Test-time compute** — spending more inference compute on a problem by generating
+  more intermediate (thinking) tokens, rather than by using a larger model.
+- **Reasoning effort / thinking budget** — a tunable cap on how many thinking tokens a
+  reasoning model may spend; trades answer quality on hard problems against cost and
+  latency.
+- **Thinking-token non-persistence** — providers commonly strip prior-turn chain-of-thought
+  from the resent history, so thinking tokens bill once as output rather than recurring
+  as input every later turn.
+
+### Deep dive — Common misconceptions
+
+- ❌ A reasoning model's cost tracks the length of its visible answer → ✅ It tracks
+  *total* generated tokens; the invisible thinking tokens bill at the output rate and can
+  dwarf the answer.
+- ❌ Thinking tokens are free or instantaneous → ✅ They are sequential decode — billed
+  as output and adding real latency before the first visible token appears.
+- ❌ Thinking tokens accumulate in resent history like an assistant answer does → ✅
+  Providers typically strip prior chain-of-thought from the array; thinking tokens are
+  billed once and do not compound the cumulative-input curve the way a verbose visible
+  answer does.
+- ❌ A generous `max_tokens` is harmless on a reasoning model → ✅ It is *necessary* —
+  too low a cap can be consumed entirely by thinking, leaving no room for the visible
+  answer, yielding a `length` finish on an empty-looking response.
+
+### Deep dive — Worked example
+
+You ship a "deep research" feature on a reasoning model and notice two things in
+production:
+
+1. **Bills are 3–4× the equivalent non-reasoning call** even though the visible answers
+   are about the same length. A typical request shows 8,000 *thinking* tokens followed
+   by 600 visible tokens — so the model generated 8,600 output tokens total, not 600.
+   At the output rate, that's where the bill went.
+2. **Users see a 6–8 second delay before any text appears**, then it streams normally.
+   Per Topic 1.5, thinking tokens are sequential decode — the model is producing them
+   one at a time before the visible answer starts, inflating perceived TTFT by the
+   entire thinking phase.
+
+The fix uses three levers:
+
+- **Reasoning effort / thinking budget** — lower it from "high" to "medium" for routine
+  queries; reserve "high" for genuinely hard requests routed there explicitly.
+- **Routing** — easy classifications go to a non-reasoning model; only the hard subset
+  goes to the reasoning model.
+- **`max_tokens`** — set it high enough to comfortably cover thinking + answer.
+  Previously you had `max_tokens=2000` "to bound cost"; with 8,000-token thinking
+  phases, that cap was being hit mid-reasoning and producing empty-looking `length`
+  finishes for the hard queries — making the cap a *correctness* bug, not just a budget
+  control.
+
+One additional accounting fact to internalize: those 8,000 thinking tokens are billed
+once, on this turn, as output. They are *not* re-sent as input on later turns
+(Anthropic's extended-thinking API strips them from the resent array by default; confirm
+your provider's behavior). So unlike a verbose visible answer, thinking tokens do not
+get caught up in the quadratic cumulative-input curve from §4.2 — but they make this
+turn alone expensive.
+
+### Deep dive — Check questions
+
+1. A team switches a feature to a reasoning model and the per-request bill triples even
    though the visible answers got *shorter*. A teammate is baffled. Explain what they are
    missing, and name two distinct levers they have to bring the cost down. — **Answer:**
    They are missing the **thinking tokens**: a reasoning model generates a long internal
@@ -911,6 +988,33 @@ The two billing buckets compared:
    and route easy ones to a non-reasoning model; tighten the prompt so less deliberation
    is needed. They should also expect higher latency, since thinking is sequential
    decode that delays the first visible token.
+2. A reasoning-model call returns `finish_reason: "length"` and an apparently empty
+   visible response. Walk through what likely happened in terms of where the
+   `max_tokens` budget went, why this is a *correctness* failure rather than a quality
+   one, and how the `max_tokens` discipline differs for a reasoning model versus a
+   standard model. — **Answer:** The model spent the entire `max_tokens` budget on the
+   thinking phase and was cut off *before* producing any of the visible answer — that's
+   why the visible response is empty and the finish reason is `length`. It is a
+   correctness failure because the request returned no usable answer at all, not a worse
+   answer. For a standard model, `max_tokens` only needs to bound the visible answer
+   length. For a reasoning model, `max_tokens` must cover thinking *plus* the visible
+   answer; too low a cap doesn't just shorten the reply, it can eat the reply entirely.
+   The fix is to size `max_tokens` against the expected thinking budget (set by the
+   reasoning-effort knob) plus a generous answer allowance — and to always inspect the
+   finish reason.
+3. A teammate worries that switching to a reasoning model will explode the cumulative
+   input curve from §4.2 — "if every turn the model thinks 8,000 tokens, won't that
+   8,000 get resent as input every later turn, just like an assistant answer does?"
+   Evaluate the worry. — **Answer:** Mostly no, and it's a useful distinction. Providers
+   commonly strip the prior turn's chain-of-thought from the resent history, so thinking
+   tokens are typically billed *once* (as output, on the turn they were generated) and
+   do *not* recur as input on later turns the way a verbose visible answer does.
+   Thinking tokens make the *current turn* expensive (output rate × a lot of tokens) but
+   do not compound the cumulative-input curve. The thing that still compounds is the
+   visible answer the reasoning produced — that *is* in the resent history. So: thinking
+   tokens are a one-shot output cost per turn; keep visible answers concise to control
+   the cumulative input curve; confirm specific provider behavior on chain-of-thought
+   persistence.
 
 ---
 
@@ -1111,14 +1215,14 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    and the model's recall of the task. — **Answer:** True. A variable task at the end
    keeps the stable prefix cacheable, and the end position is recency-favored so the task
    stays salient.
-9. A reasoning model's per-request cost is well estimated from the length of its visible
-   answer. — **Answer:** False. Cost tracks *total* generated tokens, including the
-   invisible thinking/reasoning tokens, which bill at the output rate and can far exceed
-   the visible answer.
-10. Because thinking tokens are generated before the visible answer, a reasoning model
-    can take many seconds before its first *visible* token appears. — **Answer:** True.
-    Thinking tokens are sequential decode; the entire thinking phase runs before the
-    visible answer, inflating perceived time-to-first-token.
+9. [deep-dive] A reasoning model's per-request cost is well estimated from the length
+   of its visible answer. — **Answer:** False. Cost tracks *total* generated tokens,
+   including the invisible thinking/reasoning tokens, which bill at the output rate and
+   can far exceed the visible answer.
+10. [deep-dive] Because thinking tokens are generated before the visible answer, a
+    reasoning model can take many seconds before its first *visible* token appears. —
+    **Answer:** True. Thinking tokens are sequential decode; the entire thinking phase
+    runs before the visible answer, inflating perceived time-to-first-token.
 11. The KV cache that makes decode efficient has no downside; keeping more tokens in
     context costs nothing on the server beyond compute time. — **Answer:** False. The KV
     cache must be stored in GPU memory, and its size grows linearly with context length —
@@ -1191,8 +1295,8 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    task salient (recency)
    D) Reduces the number of output tokens
    — **Answer:** C. The ordering simultaneously serves caching and positional salience.
-9. A team moves a feature to a reasoning model and per-request cost rises sharply even
-   though visible answers are shorter. The best explanation is:
+9. [deep-dive] A team moves a feature to a reasoning model and per-request cost rises
+   sharply even though visible answers are shorter. The best explanation is:
    A) Reasoning models have a higher per-input-token price
    B) The model generates many invisible thinking tokens, billed at the output rate, so
    cost tracks total generated tokens rather than visible answer length
@@ -1271,9 +1375,9 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    turn was deleted long ago — there is no recovery. Retrieval-on-demand still has that
    turn in its external store, so it can fetch it whenever the conversation references
    it.
-8. Reasoning models introduce "thinking tokens" / test-time compute. Explain what they
-   are and lay out their three consequences for an engineer: cost, latency, and budgeting
-   `max_tokens`. — **Model answer:** A reasoning model is trained to generate a long
+8. [deep-dive] Reasoning models introduce "thinking tokens" / test-time compute.
+   Explain what they are and lay out their three consequences for an engineer: cost,
+   latency, and budgeting `max_tokens`. — **Model answer:** A reasoning model is trained to generate a long
    internal chain of thought before its visible answer — that is *test-time compute*:
    spending more *inference* tokens on a hard problem instead of (or alongside) a bigger
    model. (1) **Cost** — thinking tokens bill at the output rate even though the user

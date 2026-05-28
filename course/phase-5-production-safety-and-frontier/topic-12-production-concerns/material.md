@@ -458,15 +458,18 @@ per million tokens by ~5× with no quality change.
 
 ## 12.5 — Speculative decoding — a latency lever
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §12.6. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
 
-Decode is the slow phase (12.1): each output token requires a full pass over the model
-weights, and that is **memory-bandwidth-bound** — the GPU spends most of its time moving
-weights, not computing. A subtle consequence: generating *one* token and verifying
-*several* candidate tokens in a single forward pass cost almost the same, because both
-are dominated by the one weight read. **Speculative decoding** exploits exactly this.
+### Overview — Concept
 
-The scheme uses two models:
+**Speculative decoding** is a decode-acceleration technique that an LLM provider may
+already be running for you. The scheme uses two models:
 
 - A small, fast **draft model** cheaply *proposes* the next few tokens (say 4) one at a
   time — it is cheap precisely because it is small.
@@ -477,11 +480,8 @@ The scheme uses two models:
 
 Crucially this is **lossless**: the output distribution is identical to what the target
 model would have produced alone — speculative decoding is an acceleration, not an
-approximation, so it does not change quality [4]. The win is throughput per forward
-pass:
-when the draft model guesses well, the target model emits several tokens for the price
-of one weight read instead of one. Typical speedups are ~1.5–3× on TPOT, depending on
-how often the draft is accepted.
+approximation, so it does not change quality [4]. Typical speedups are ~1.5–3× on TPOT,
+depending on how often the draft is accepted.
 
 The **acceptance rate** is everything. If the draft model agrees with the target most
 of the time (easy, predictable text — boilerplate, common phrasing), most drafted
@@ -490,13 +490,6 @@ often wrong, few tokens are accepted, and you have paid for draft work that was 
 away — the speedup shrinks toward zero (and can even be slightly negative). The draft
 model must be *well-matched* to the target: a good predictor of the same distribution.
 
-Variants you may hear named: a **separate small draft model** (the classic form);
-**self-speculation / Medusa**, where extra lightweight prediction heads on the target
-model itself do the drafting (no separate model to host); and **n-gram / prompt-lookup**
-decoding, which "drafts" by copying spans straight from the prompt — very effective when
-the output quotes the input (summarization, code editing, RAG answers that echo
-sources).
-
 Why an *API consumer* should care even though the provider implements it: it is one
 reason an endpoint's TPOT can vary with *content* (predictable outputs stream faster
 than novel ones), and it is a real lever to enable when you self-host — a ~2× decode
@@ -504,7 +497,7 @@ speedup at zero quality cost. It belongs in the same mental bucket as continuous
 batching: a provider-side mechanism that explains the latency you observe and a knob you
 own the moment you run your own serving stack.
 
-### Key terms
+### Overview — Key terms
 
 - **Speculative decoding** — accelerating decode by having a small draft model propose
   several tokens that the large target model verifies in one forward pass; lossless.
@@ -513,21 +506,97 @@ own the moment you run your own serving stack.
   verifies and accepts/rejects drafted tokens.
 - **Acceptance rate** — the fraction of drafted tokens the target accepts; governs the
   achieved speedup.
-- **Self-speculation / n-gram drafting** — drafting without a separate model: extra
-  prediction heads on the target (Medusa), or copying spans from the prompt
-  (prompt-lookup).
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ "Speculative decoding trades quality for speed." → ✅ It is *lossless* — the output
   distribution matches the target model run alone; only speed changes.
 - ❌ "It always gives a big speedup." → ✅ The speedup tracks the acceptance rate;
   predictable text accelerates well, surprising text barely at all.
+
+### Overview — Worked example
+
+A self-hosted 70B model serves two workloads. A summarization endpoint produces output
+that heavily echoes the source document — its text is highly predictable, so the draft
+is accepted ~80% of the time and TPOT drops ~2.5×. A creative-writing endpoint produces
+novel, surprising prose — the draft is accepted far less often, and speculative decoding
+yields only ~1.2×. Same technique, same models; the *content's predictability* set the
+acceptance rate and therefore the speedup. Quality is unchanged on both, because the
+scheme is lossless.
+
+### Overview — Check questions
+
+1. A teammate worries that turning on speculative decoding will subtly change the
+   model's answers and wants to re-run the full eval suite to check for quality
+   regressions. Are they right to worry? — **Answer:** No. Speculative decoding is
+   *lossless*: the target model verifies every drafted token against what it would
+   itself have chosen and only accepts matches, so the final output distribution is
+   identical to running the target model alone. It changes *latency*, not *output* — so
+   it does not need a quality re-eval (a latency benchmark is the right check). It is an
+   acceleration, not an approximation — unlike, say, quantization or a smaller model.
+2. Two endpoints run the same speculative-decoding setup; one gets a 2.5× speedup and
+   the other barely 1.1×. Neither team changed the models. What property of the
+   *traffic* explains the gap? — **Answer:** The **acceptance rate** — how often the
+   draft model's proposed tokens match what the target model would have chosen. The
+   fast endpoint serves predictable text (boilerplate, output that echoes the prompt),
+   so most drafted tokens are accepted and many tokens are emitted per target forward
+   pass. The slow endpoint serves novel/surprising text, so the draft is usually wrong,
+   few tokens are accepted, and the drafting work is mostly wasted. The technique is
+   identical; the predictability of the output distribution sets the speedup.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview told you speculative decoding is lossless and that its speedup tracks the
+acceptance rate. This section unpacks *why* the mechanism is a win in the first place
+(it comes straight from decode being memory-bandwidth-bound), and surveys the variants
+you may hear named on senior interviews. It is **not required** to advance and is not in
+the topic exam.
+
+**Why verifying N tokens ≈ generating 1 — the memory-bandwidth framing.** Decode is the
+slow phase (12.1): each output token requires a full pass over the model weights, and
+that is **memory-bandwidth-bound** — the GPU spends most of its time moving weights, not
+computing. A subtle consequence: generating *one* token and verifying *several* candidate
+tokens in a single forward pass cost almost the same, because both are dominated by the
+one weight read. The extra arithmetic to score N positions instead of 1 is essentially
+free against the bandwidth bill. That is *the* mechanical reason speculative decoding
+works at all: the win is throughput per forward pass — when the draft model guesses
+well, the target model emits several tokens for the price of one weight read instead of
+one.
+
+**Variants you may hear named.** Speculative decoding does not require a separate draft
+model:
+
+- **Separate small draft model** — the classic form: a smaller LM of the same family,
+  cheap enough that the per-token drafting cost is negligible.
+- **Self-speculation / Medusa** — extra lightweight prediction heads bolted on the
+  target model itself do the drafting. No separate model to host; the target model
+  drafts for itself.
+- **N-gram / prompt-lookup decoding** — "drafts" by copying spans straight from the
+  prompt. Very effective when the output quotes the input (summarization, code editing,
+  RAG answers that echo sources) — no learned draft model needed at all.
+
+### Deep dive — Key terms
+
+- **Memory-bandwidth-bound** — the per-step bottleneck of decode: time is dominated by
+  streaming the model's weights from memory, not by arithmetic. The reason scoring N
+  candidate tokens in one forward pass costs about the same as scoring 1.
+- **Self-speculation / Medusa** — drafting via extra prediction heads on the target
+  model itself, eliminating the separate draft model.
+- **N-gram / prompt-lookup drafting** — drafting by copying spans from the prompt;
+  best when the output echoes the input.
+
+### Deep dive — Common misconceptions
+
 - ❌ "It works because two models are faster than one." → ✅ It works because verifying
   N tokens costs about the same as generating one — decode is memory-bandwidth-bound, so
   the extra verification compute is nearly free.
+- ❌ "Speculative decoding always needs a separate draft model." → ✅ Self-speculation
+  (Medusa heads) and n-gram/prompt-lookup drafting both avoid a separate model — the
+  target drafts for itself, or you copy spans from the prompt.
 
-### Worked example
+### Deep dive — Worked example
 
 The draft model proposes a short run of tokens; the target model verifies all of them
 in a *single* forward pass, accepts the longest matching prefix, and emits its own
@@ -555,37 +624,33 @@ pass costs *about the same* as generating 1:
 ```
 
 So the verification work is nearly free; the only question is how many of the drafted
-tokens survive (the acceptance rate).
+tokens survive (the acceptance rate). Concretely, if the summarization workload above
+drafts 4 tokens per round and 80% are accepted on average, each target forward pass
+advances ~3.2 drafted tokens plus 1 target-generated correction — roughly 4× the token
+output of vanilla decode for ~1× the target-pass cost, which is where the ~2.5× TPOT
+gain comes from (the rest goes to the draft model's own work and overhead). At 30%
+acceptance the same arithmetic yields ~1.2 drafted + 1 = ~2.2 tokens per pass — barely
+better than vanilla, sometimes worse once you pay for the wasted draft work.
 
-A self-hosted 70B model serves two workloads. A summarization endpoint produces output
-that heavily echoes the source document — its text is highly predictable, so a small
-draft model (or prompt-lookup drafting) is accepted ~80% of the time and TPOT drops
-~2.5×. A creative-writing endpoint produces novel, surprising prose — the draft is
-accepted far less often, and speculative decoding yields only ~1.2×. Same technique,
-same models; the *content's predictability* set the acceptance rate and therefore the
-speedup. The team enables prompt-lookup drafting for the summarizer and accepts the
-modest gain on the writer — and quality is unchanged on both, because the scheme is
-lossless.
+### Deep dive — Check questions
 
-### Check questions
-
-1. A teammate worries that turning on speculative decoding will subtly change the
-   model's answers and wants to re-run the full eval suite to check for quality
-   regressions. Are they right to worry? — **Answer:** No. Speculative decoding is
-   *lossless*: the target model verifies every drafted token against what it would
-   itself have chosen and only accepts matches, so the final output distribution is
-   identical to running the target model alone. It changes *latency*, not *output* — so
-   it does not need a quality re-eval (a latency benchmark is the right check). It is an
-   acceleration, not an approximation — unlike, say, quantization or a smaller model.
-2. Two endpoints run the same speculative-decoding setup; one gets a 2.5× speedup and
-   the other barely 1.1×. Neither team changed the models. What property of the
-   *traffic* explains the gap? — **Answer:** The **acceptance rate** — how often the
-   draft model's proposed tokens match what the target model would have chosen. The
-   fast endpoint serves predictable text (boilerplate, output that echoes the prompt),
-   so most drafted tokens are accepted and many tokens are emitted per target forward
-   pass. The slow endpoint serves novel/surprising text, so the draft is usually wrong,
-   few tokens are accepted, and the drafting work is mostly wasted. The technique is
-   identical; the predictability of the output distribution sets the speedup.
+1. A teammate says "speculative decoding is faster because the draft model does most of
+   the work and the big model just rubber-stamps it." Where is that wrong, and what is
+   the actual mechanical reason the scheme wins? — **Answer:** The big model is *not*
+   rubber-stamping — it runs a full forward pass to score every drafted position, and
+   that pass costs as much as one normal decode step. The win is not that the target
+   does less work; it is that *one* target forward pass can verify N tokens for almost
+   the same cost as generating 1, because decode is memory-bandwidth-bound and the pass
+   is dominated by the one weight read. The drafted tokens that survive verification are
+   "free" tokens piggy-backing on a forward pass you were going to pay for anyway.
+2. A team can't host a separate draft model alongside their target. Name two ways to
+   still get speculative-decoding-style speedups *without* a second model, and the kind
+   of workload each one is best at. — **Answer:** (a) **Self-speculation / Medusa** —
+   extra lightweight prediction heads bolted onto the target model itself do the
+   drafting; works generally because the target drafts for itself. (b) **N-gram /
+   prompt-lookup drafting** — propose spans copied straight from the prompt; best when
+   the output echoes the input (summarization, code editing, RAG answers that quote
+   sources), because the acceptance rate on copied spans is high.
 
 ---
 
@@ -1286,7 +1351,7 @@ inputs.
    at peak), explains why RPM/TPM limits exist, and surfaces the genuine
    latency-vs-throughput trade-off providers tune. For self-hosters it is a 5–20× cost
    lever.
-5. Explain speculative decoding: the mechanism, why it is lossless, and what governs
+5. [deep-dive] Explain speculative decoding: the mechanism, why it is lossless, and what governs
    how much it helps. — **Model answer / rubric:** Decode is memory-bandwidth-bound, and
    verifying several tokens in one forward pass costs about the same as generating one.
    A small *draft model* proposes the next few tokens; the large *target model* verifies

@@ -63,6 +63,7 @@ How large language models actually work, from the ground up. Everything in later
 assumes this material.
 
 ### Topic 1 — LLM Fundamentals
+- 1.0 A short history — how we got to LLMs (RNN → seq2seq+attention → transformer → scaling → post-training → reasoning)
 - 1.1 What an LLM is — next-token prediction as the whole job
 - 1.2 Training vs. inference; why weights are frozen when you use the model
 - 1.3 The transformer at a block level — embeddings → attention → FFN → unembedding

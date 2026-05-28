@@ -777,14 +777,117 @@ that string is stripped, so you cleanly get just the assistant's turn.
 
 ## 3.7 — Determinism caveats; seeds and their limits
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short Overview that everyone needs (taught and tested normally), and
+> a longer Deep dive with the mechanism details (skip-by-default, available on
+> request). The Deep dive is interview-bait and worth doing eventually, but it is
+> not required to advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 A natural assumption is that **temperature 0 makes the model perfectly deterministic** —
 same input, byte-identical output, every time. In practice that is **not reliable**.
 Greedy decoding removes the *sampling* randomness, but several other sources of
-non-determinism remain, and an engineer must know them.
+non-determinism remain in the inference stack: tiny numerical differences in how the GPU
+computes the logits, the influence of other requests that happened to share your batch,
+and the provider quietly rolling new weights, kernels, or hardware under a stable model
+name. (The Deep dive enumerates and explains these sources in mechanism detail.) The
+upshot: at `temperature=0` you usually get the same output, but you cannot rely on it,
+and when it diverges it tends to diverge *completely* — one flipped close call near the
+start of generation cascades through every later token.
 
-**Why temperature 0 is not fully deterministic:**
+**Seeds and their limits.** Some APIs expose a `seed` parameter — OpenAI's API is the
+common example; Anthropic's Messages API does not currently expose a `seed` parameter
+[1][3]. A seed fixes the *pseudo-random number generator* used for **sampling**, so
+with the same seed, temperature, and prompt you get more *consistent* sampled outputs.
+But a seed only addresses the sampling-randomness source. It does **not** fix the
+numerical, batching, routing, or backend-update sources above. OpenAI itself describes
+seeded outputs as **best-effort**, explicitly stating determinism is *not guaranteed*,
+and exposes a `system_fingerprint` field so you can detect when the backend changed [3].
+With temperature 0 a seed is largely moot — there is no sampling randomness to fix —
+yet output can still vary for the other reasons.
+
+**Engineering takeaway: do not assert exact equality on a live model.** Do not build
+systems that assume bit-exact reproducibility from an LLM. Caches should key on inputs,
+not assume identical outputs. Evals (Topic 9) must tolerate run-to-run variation — run
+multiple samples, use tolerant metrics, never assert exact-string equality on a live
+model. Agent runs (Topic 8) are inherently non-reproducible for the same reasons; log
+full traces rather than expecting to "replay" a run. The correct mental model: an LLM
+call is a *probabilistic* operation even at temperature 0; treat reproducibility as
+approximate. (Some stacks now offer an opt-in *deterministic mode* that addresses one of
+the underlying sources at a throughput cost — covered in the Deep dive — but unless you
+have explicitly enabled such a mode, the default is non-deterministic.)
+
+### Overview — Key terms
+
+- **Determinism** — same input always producing the same output; for LLMs it is only
+  approximate, even at temperature 0.
+- **Seed** — a parameter fixing the sampling RNG; makes sampled output more consistent
+  but does not fix the non-sampling sources.
+- **system_fingerprint** — an identifier exposed by some APIs so clients can detect
+  backend changes.
+- **Best-effort determinism** — the honest framing for seeded LLM output: more
+  consistent, not guaranteed bit-identical.
+
+### Overview — Common misconceptions
+
+- ❌ Temperature 0 guarantees identical output every time → ✅ It removes sampling
+  randomness only; numerical, batching, routing, and backend sources can still cause
+  divergence.
+- ❌ A seed makes LLM output fully reproducible → ✅ A seed fixes only the sampling RNG;
+  it does not control the non-sampling sources. Determinism is best-effort.
+- ❌ "Same model name" means the same computation forever → ✅ Providers update weights,
+  kernels, and hardware; the backend can change underneath a stable model name.
+- ❌ Evals can assert exact-string equality against a live model → ✅ They must tolerate
+  run-to-run variation — sample multiple times and use tolerant metrics.
+
+### Overview — Worked example
+
+You run a regression test that calls the model at `temperature=0` with a fixed prompt
+and asserts the output equals a saved golden string. It passes for a week, then fails in
+CI — yet nothing in your code changed. What happened: the output diverged for one of the
+non-sampling reasons (the Deep dive walks through which ones). At one step two tokens
+had near-identical logits, the tie broke the other way, and the rest of the generation
+followed a different path. Adding a `seed` would not have saved the test, because the
+divergence was not from sampling. Unless your provider offers an opt-in deterministic
+mode and you have enabled it, the correct fix is to stop asserting exact equality: score
+the output semantically (e.g., an LLM-judge or rubric, Topic 9) or assert on structured
+fields, and tolerate variation.
+
+### Overview — Check questions
+
+1. A teammate, after a flaky test, says "add a `seed` — that makes the model
+   deterministic." Evaluate this for a call made at `temperature=0`, and separately for
+   a call at `temperature=0.8`. — **Answer:** A `seed` fixes only the *sampling* RNG. At
+   `temperature=0` there is no sampling step for the seed to control, so adding a seed
+   does essentially nothing — the flakiness is from non-sampling sources the seed cannot
+   touch. At `temperature=0.8` a seed *does* help: it makes the sampling draws
+   repeatable, so outputs are more consistent — but still only best-effort, since the
+   same non-sampling sources remain. In neither case does a seed deliver guaranteed
+   bit-exact reproducibility.
+2. A regression suite asserts the model's output exactly equals a saved golden string;
+   it passes for weeks, then fails in CI with no code change. Explain why the test
+   design — not the model — is the real defect, and how you would rewrite the assertion.
+   — **Answer:** The model behaving non-deterministically at `temperature=0` is
+   *expected*; the defect is a test that assumes bit-exact reproducibility from a
+   probabilistic, infrastructure-dependent system. Rewrite it to tolerate variation:
+   assert on structured fields / key properties, or score the output semantically (rubric
+   or LLM-judge, Topic 9), and sample multiple times rather than demanding one exact
+   string.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview said "several non-sampling sources of variation remain in the inference
+stack" and asked you to take the existence of those sources on faith. This section
+enumerates and explains them at mechanism depth, then covers the engineering escape
+hatch — batch-invariant inference kernels — that makes the batching source *fixable*
+rather than a law of nature. This material is interview-bait (senior interviews probe
+why temp-0 isn't deterministic) but is **not required** to advance and is not in the
+topic exam.
+
+**Why temperature 0 is not fully deterministic — the four sources:**
 
 - **Floating-point non-associativity.** Floating-point addition is not associative:
   `(a + b) + c` can differ in the last bits from `a + (b + c)`. GPUs sum massive numbers
@@ -806,17 +909,6 @@ non-determinism remain, and an engineer must know them.
   or the inference stack at any time; "the same model name" is not guaranteed to be the
   same computation across days.
 
-**Seeds and their limits.** Some APIs expose a `seed` parameter — OpenAI's API is the
-common example; Anthropic's Messages API does not currently expose a `seed` parameter
-[1][3]. A seed fixes the *pseudo-random number generator* used for **sampling**, so
-with the same seed, temperature, and prompt you get more *consistent* sampled outputs.
-But a seed only addresses the sampling-randomness source. It does **not** fix
-floating-point reduction order, batching effects, MoE routing, or backend changes.
-OpenAI itself describes seeded outputs as **best-effort**, explicitly stating
-determinism is *not guaranteed*, and exposes a `system_fingerprint` field so you can
-detect when the backend changed [3]. With temperature 0 a seed is largely moot — there
-is no sampling randomness to fix — yet output can still vary for the other reasons.
-
 **This is partly solvable — it is not a law of nature.** The batching-effect source in
 particular is now well understood and addressable. The reason a request's logits depend
 on its batch is that common GPU kernels (matmuls, reductions, normalization) sum values
@@ -831,59 +923,39 @@ throughput for reproducibility), not something inherently "outside your control"
 unless you have explicitly enabled such a mode, assume the default behavior is
 non-deterministic.
 
-**Practical consequences.** Do not build systems that assume bit-exact reproducibility
-from an LLM. Caches should key on inputs, not assume identical outputs. Evals (Topic 9)
-must tolerate run-to-run variation — run multiple samples, use tolerant metrics, never
-assert exact-string equality on a live model. Agent runs (Topic 8) are inherently
-non-reproducible for the same reasons; log full traces rather than expecting to "replay"
-a run. The correct mental model: an LLM call is a *probabilistic* operation even at
-temperature 0; treat reproducibility as approximate.
+### Deep dive — Key terms
 
-### Key terms
-
-- **Determinism** — same input always producing the same output; for LLMs it is only
-  approximate, even at temperature 0.
 - **Floating-point non-associativity** — `(a+b)+c ≠ a+(b+c)` in floating point; varying
   GPU reduction order yields tiny numerical differences that can flip close logits.
 - **Batching effects** — co-located requests and batch size altering the exact
   computation path and thus the logits.
 - **MoE routing non-determinism** — token-to-expert routing influenced by batch
   composition, adding run-to-run variation.
-- **Seed** — a parameter fixing the sampling RNG; makes sampled output more consistent
-  but does not fix the non-sampling sources.
-- **system_fingerprint** — an identifier exposed by some APIs so clients can detect
-  backend changes.
 - **Batch-invariant / deterministic inference kernels** — inference kernels written so
   the floating-point reduction order is fixed regardless of batch size/composition;
   remove the batching-effect source of nondeterminism (at a throughput cost), making
   temperature-0 output reproducible.
 
-### Common misconceptions
+### Deep dive — Common misconceptions
 
-- ❌ Temperature 0 guarantees identical output every time → ✅ It removes sampling
-  randomness only; floating-point order, batching, MoE routing, and backend changes can
-  still cause divergence.
-- ❌ A seed makes LLM output fully reproducible → ✅ A seed fixes only the sampling RNG;
-  it does not control numerical/batching/routing non-determinism. Determinism is
-  best-effort.
-- ❌ "Same model name" means the same computation forever → ✅ Providers update weights,
-  kernels, and hardware; the backend can change underneath a stable model name.
+- ❌ The non-determinism is all about sampling, so greedy fixes it → ✅ Greedy fixes
+  only sampling; the four sources above act below the sampling step, on the logits
+  themselves.
+- ❌ Each request has its own isolated computation → ✅ Continuous batching co-locates
+  requests; your logits depend on what else was in your batch, via reduction order
+  (and, in MoE models, sometimes routing).
 - ❌ LLM nondeterminism is an unfixable law of nature → ✅ It is a known engineering
   trade-off: batch-invariant (deterministic) inference kernels remove the batching-effect
   source at a throughput cost, and some stacks now offer an opt-in deterministic mode.
-- ❌ Evals can assert exact-string equality against a live model → ✅ They must tolerate
-  run-to-run variation — sample multiple times and use tolerant metrics.
 
-### Worked example
+### Deep dive — Worked example
 
-You run a regression test that calls the model at `temperature=0` with a fixed prompt
-and asserts the output equals a saved golden string. It passes for a week, then fails in
-CI — yet nothing in your code changed. What happened: the output diverged for one of the
-infrastructure reasons. Perhaps your request landed in a differently-sized batch, the
-reduction order shifted, and at one step two tokens had near-identical logits — the tie
-broke the other way, and the rest of the generation followed a different path.
-
-How one near-tie cascades into a wholly different answer:
+Take the regression-test failure from the Overview and trace the mechanism in detail.
+Your request landed in a differently-sized batch this run; common GPU kernels reduce
+values in a *batch-size-dependent order*, and since floating-point addition is
+non-associative, the resulting logits differ from the previous run in the last few bits.
+Almost every step is unaffected — the top token is the same. But at one step two
+candidate tokens have near-identical logits:
 
 ```
             two near-equal logits at one step
@@ -906,14 +978,12 @@ How one near-tie cascades into a wholly different answer:
 ```
 
 One flipped close call near the start propagates through every subsequent step. Or the
-provider rolled a new kernel. Adding a `seed` would not have saved the test, because the
-divergence was not from sampling. Unless your provider offers an opt-in deterministic
-(batch-invariant) mode and you have enabled it, the correct fix is to stop asserting
-exact equality: score the output semantically (e.g., an LLM-judge or rubric, Topic 9) or
-assert on structured fields, and tolerate variation. (If a deterministic mode *is*
-available, enabling it is the other legitimate route — at a throughput cost.)
+provider rolled a new kernel. The mechanism is always the same: a non-sampling source
+perturbs the logits, a near-tie flips, and greedy walks a different path. If a
+deterministic (batch-invariant) mode *is* available from the provider, enabling it
+removes the batching source and makes the test pass run-to-run — at a throughput cost.
 
-### Check questions
+### Deep dive — Check questions
 
 1. At `temperature=0` there is no sampling randomness, yet two calls with the identical
    prompt can still diverge. Walk through *how* a non-sampling source of variation turns
@@ -926,26 +996,20 @@ available, enabling it is the other legitimate route — at a throughput cost.)
    different token becomes part of the context for every subsequent step, so the rest of
    the generation conditions on a different prefix and can diverge entirely. One flipped
    close call cascades into a different answer.
-2. A teammate, after a flaky test, says "add a `seed` — that makes the model
-   deterministic." Evaluate this for a call made at `temperature=0`, and separately for
-   a call at `temperature=0.8`. — **Answer:** A `seed` fixes only the *sampling* RNG. At
-   `temperature=0` there is no sampling step for the seed to control, so adding a seed
-   does essentially nothing — the flakiness is from numerical/batching/routing/backend
-   sources the seed cannot touch. At `temperature=0.8` a seed *does* help: it makes the
-   sampling draws repeatable, so outputs are more consistent — but still only
-   best-effort, since the same non-sampling sources remain. In neither case does a seed
-   deliver guaranteed bit-exact reproducibility.
-3. A regression suite asserts the model's output exactly equals a saved golden string;
-   it passes for weeks, then fails in CI with no code change. Explain the most likely
-   cause, why the test design — not the model — is the real defect, and how you would
-   rewrite the assertion. — **Answer:** The output diverged for an infrastructure reason
-   (a differently-sized batch shifted reduction order and flipped a close logit, or the
-   provider rolled a new kernel/weights). The model behaving non-deterministically at
-   `temperature=0` is *expected*; the defect is a test that assumes bit-exact
-   reproducibility from a probabilistic, infrastructure-dependent system. Rewrite it to
-   tolerate variation: assert on structured fields / key properties, or score the output
-   semantically (rubric or LLM-judge, Topic 9), and sample multiple times rather than
-   demanding one exact string.
+2. A teammate claims "LLM non-determinism is fundamental — there's literally nothing
+   engineering can do about it short of rewriting floating-point math." Where is this
+   wrong, specifically with respect to the *batching* source, and what is the trade-off
+   for fixing it? — **Answer:** Wrong on the batching source specifically. That source
+   arises because common GPU kernels sum values in a *batch-size-dependent order*, and
+   floating-point addition is non-associative — so the same request's logits depend on
+   what else was in its batch. **Batch-invariant (deterministic) inference kernels** are
+   written so the reduction order is *fixed regardless of batch size or composition*,
+   which removes the source and makes temperature-0 output reproducible. The trade-off
+   is throughput: deterministic kernels are slower, so providers offer them as an opt-in
+   mode rather than the default. The MoE-routing and infrastructure-update sources are
+   separate problems and aren't solved by batch-invariant kernels alone — but the
+   "nothing can be done" framing is wrong: this is a known, partly solved engineering
+   trade-off, not a law of nature.
 
 ---
 
@@ -984,11 +1048,11 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    that string in the returned output. — **Answer:** False. The stop string is normally
    *excluded* from the returned output; generation halts when it is produced, so
    downstream code cannot rely on it being present.
-8. The batching-effect source of LLM nondeterminism is an immutable law of physics that
-   no engineering can address. — **Answer:** False. It stems from batch-size-dependent
-   floating-point reduction order; batch-invariant (deterministic) inference kernels fix
-   that order regardless of batch composition and remove the source, at a throughput
-   cost — it is a known, partly solved engineering trade-off.
+8. [deep-dive] The batching-effect source of LLM nondeterminism is an immutable law of
+   physics that no engineering can address. — **Answer:** False. It stems from
+   batch-size-dependent floating-point reduction order; batch-invariant (deterministic)
+   inference kernels fix that order regardless of batch composition and remove the
+   source, at a throughput cost — it is a known, partly solved engineering trade-off.
 
 ### Multiple Choice
 
@@ -1105,9 +1169,9 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    answer (`stop`) from a truncated one (`length`) — so a too-low cap only fails on the
    *occasional* large output, producing sporadic invalid results that look random rather
    than a consistent, obvious failure.
-6. `temperature=0` removes sampling randomness, yet output can still vary call to call.
-   Name two distinct non-sampling sources of variation and, for *one* of them, explain
-   the mechanism by which it changes the final answer. — **Model answer:** Two of:
+6. [deep-dive] `temperature=0` removes sampling randomness, yet output can still vary
+   call to call. Name two distinct non-sampling sources of variation and, for *one* of
+   them, explain the mechanism by which it changes the final answer. — **Model answer:** Two of:
    floating-point non-associativity (GPU reduction order varying with kernels/hardware/
    batch); batching effects (co-located requests change the computation path); MoE
    routing influenced by batch composition; provider backend/weight/kernel updates.
@@ -1145,8 +1209,8 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    one cheap forward pass instead of generating an explanation; more deterministic and
    parseable. Caveats: logprobs reflect model confidence, not guaranteed correctness
    (imperfect calibration); not all models expose logprobs.
-3. Discuss the sources of non-determinism in LLM inference and how an engineer should
-   design around them. — **Model answer / rubric:** Sources: sampling randomness
+3. [deep-dive] Discuss the sources of non-determinism in LLM inference and how an
+   engineer should design around them. — **Model answer / rubric:** Sources: sampling randomness
    (removed by greedy/T=0 or fixed by a seed); floating-point non-associativity with
    varying GPU reduction order; batching effects from co-located requests; MoE routing
    influenced by batch composition; provider backend/weight/kernel updates. A seed only
@@ -1203,11 +1267,12 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    range and use top-p (~0.9–0.95) to allow varied but still coherent continuations.
    Optionally add a modest presence/frequency penalty if specific phrases recur. Avoid
    temperature far above ~1.2 (incoherence). Verify with sample outputs.
-3. Two teammates run the *same* `temperature=0` prompt against the *same* model at the
-   same time and get slightly different answers. One concludes "the API is broken"; the
-   other says "someone must have changed the prompt." Both are wrong. Explain what is
-   actually happening, why `temperature=0` does not prevent it, and what this implies for
-   how the team should write any test or cache that depends on the model's output. —
+3. [deep-dive] Two teammates run the *same* `temperature=0` prompt against the *same*
+   model at the same time and get slightly different answers. One concludes "the API is
+   broken"; the other says "someone must have changed the prompt." Both are wrong.
+   Explain what is actually happening, why `temperature=0` does not prevent it, and what
+   this implies for how the team should write any test or cache that depends on the
+   model's output. —
    **Model answer / rubric:** Neither a bug nor a prompt change — this is expected
    non-determinism from *non-sampling* sources: the two requests likely landed in
    different-sized batches, shifting GPU floating-point reduction order (and possibly MoE

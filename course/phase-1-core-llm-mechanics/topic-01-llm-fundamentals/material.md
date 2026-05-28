@@ -14,6 +14,156 @@ sub-chapter assumes the ones before it, and Topics 2–16 assume all of Topic 1.
 
 ---
 
+## 1.0 — A short history: how we got to LLMs
+
+> **Context sub-chapter — no check questions, no exam items.** This is narrative
+> background that frames the rest of Topic 1. The tutor teaches it through, invites
+> questions, then moves on to §1.1. The mechanical content (transformer block,
+> inference, post-training) is taught and tested in §1.3–1.7 and Topic 14.
+
+### Concept
+
+Modern LLMs feel like a discontinuity — a thing that did not exist, then did. They are
+not. Every modern LLM is a transformer (the architecture from 2017), scaled up and
+post-trained in increasingly sophisticated ways. Understanding the path from earlier
+neural sequence models to today's chatbots is worth a few minutes because it
+contextualizes nearly every design choice in the rest of this course: why "context" is
+the unit you reason about, why post-training matters as much as the base model, and
+why "reasoning models" did not require a new architecture.
+
+**Pre-2017 — the RNN and LSTM era.** Before transformers, sequence models were
+**recurrent neural networks (RNNs)** and their gated variant, the **LSTM**. They
+processed text one token at a time, carrying a hidden state forward to remember what
+came before. They worked, but two limits hurt: (1) the recurrence is inherently
+sequential, so training could not parallelize over the sequence; long inputs were slow
+to train. (2) The hidden state had to compress *all* prior context into one
+fixed-size vector, which made long-range dependencies (referring back ten paragraphs)
+brittle.
+
+The first limit deserves to be made mechanical, because it is the entire reason
+LSTMs lost. A modern GPU has thousands of cores designed to do many independent
+arithmetic operations *at the same time*; that is the only reason GPUs are useful
+for deep learning. Training an RNN gives those cores essentially one position's
+worth of work at a time: you cannot compute the hidden state for token *t+1* until
+*t* is done, *t* until *t-1* is done, and so on down the sequence. The rest of the
+GPU sits idle waiting. The longer the sequence, the worse the under-utilization.
+The architecture is *anti-parallel* in exactly the way the hardware is built to be
+parallel. The same dollars of GPU time produced far less trained model than they
+should have, and there was no clean way to fix it without abandoning recurrence.
+That is the constraint the transformer broke.
+
+**2014–2015 — seq2seq with attention.** Bahdanau, Cho, and Bengio added an
+**attention** mechanism to encoder–decoder RNNs for machine translation [4]. Instead of
+forcing all context through one bottleneck vector, the decoder could *look back* at
+any position in the input and pick what was relevant for the next output token.
+Translation quality jumped. Attention turned out to be the load-bearing idea.
+
+**2017 — "Attention Is All You Need" (Vaswani et al.) [5].** The transformer drops
+recurrence entirely. It is built only from attention and feed-forward layers, with no
+sequential state to carry between positions. The payoff is the mirror image of the
+RNN constraint above: every position in the sequence is processed *in parallel*, via
+one big batched matrix multiplication per layer over the whole sequence — exactly
+the kind of operation a GPU is built to chew through at full throughput. The same
+hardware that ran an LSTM at a small fraction of its capacity runs a transformer
+near saturation. That hardware-utilization unlock is what made it economically
+feasible to scale to billions, then trillions, of parameters; without it, GPT-3 is
+not trainable. This is the architecture every modern LLM still uses. Sub-chapters
+1.3–1.5 walk through it.
+
+**2018–2020 — GPT-1, GPT-2, GPT-3 and the scaling era.** OpenAI took the transformer
+and asked a deceptively simple question: what happens if you just make it much bigger
+and train it on much more text? GPT-1 (~117M parameters) → GPT-2 (~1.5B) → GPT-3
+(~175B) showed that capabilities *emerge* with scale — translation, arithmetic,
+question answering, code generation — none of them explicitly trained for. Kaplan
+(2020) [6] and Hoffmann/Chinchilla (2022) [7] formalized **scaling laws**: loss
+falls predictably with more parameters, more data, and more compute. The architecture barely
+changed; the scale did.
+
+**2022 — ChatGPT and the instruction-tuning era.** A raw "base model" trained only on
+next-token prediction is *not* a helpful assistant — ask it a question and it will
+often produce more questions, because that is what its training data looks like.
+**InstructGPT** [8] and then ChatGPT introduced **post-training**: take a base model,
+**supervise fine-tune (SFT)** it on examples of "user asks → assistant helpfully
+answers," then run **RLHF** (reinforcement learning from human feedback) so the model
+prefers the kind of replies humans rate highly. Same architecture, same base weights —
+but the *behavior* becomes that of an assistant. This is when LLMs broke out
+commercially. (Topic 14 covers post-training in depth.)
+
+**2024–2026 — reasoning models and test-time compute.** The next leap was not a new
+architecture either. Models like o1, Claude with extended thinking, and DeepSeek-R1 [9]
+are still transformers — they have simply been trained, via RL on tasks with
+verifiable answers, to produce long *intermediate* reasoning before the final answer.
+The "reasoning" is more next-token prediction; the trick is teaching the model to spend
+those tokens usefully. This shifted the cost-and-latency calculus of inference (Topics
+3, 4, 12) but did not change the underlying neural network.
+
+**The tie-off.** Nothing architectural has fundamentally changed since 2017. What has
+changed is *scale*, *data*, and *post-training*. That is why the rest of this course
+spends almost no time on architecture variants and most of its time on the *system*
+around the model: how you prompt it, how you give it tools, how you evaluate it, how
+you run it safely. Those are the levers that move the needle now.
+
+### Key terms
+
+- **RNN (recurrent neural network)** — pre-transformer sequence model; processes
+  tokens one at a time carrying a hidden state forward.
+- **LSTM** — a gated RNN variant that mitigated some long-dependency problems but
+  kept the sequential bottleneck.
+- **Seq2seq with attention** — 2014–15 encoder–decoder architecture that introduced
+  attention as a way for the decoder to look back at any input position.
+- **Transformer** — the 2017 architecture built from attention + feed-forward layers,
+  with no recurrence; what every modern LLM uses.
+- **Scaling laws** — empirical relations (Kaplan; Chinchilla) showing predictable loss
+  reduction with more parameters, data, and compute.
+- **Base model** — a transformer trained only on next-token prediction; not yet an
+  assistant.
+- **Instruction tuning / SFT** — supervised fine-tuning on examples of helpful
+  responses; turns a base model into something resembling an assistant.
+- **RLHF (reinforcement learning from human feedback)** — uses human preference
+  judgments to further shape the model's behavior; introduced at scale by InstructGPT.
+- **Reasoning model** — a transformer post-trained (typically by RL on verifiable
+  tasks) to produce long intermediate reasoning before answering.
+
+### Common misconceptions
+
+- ❌ LLMs are a new kind of AI → ✅ They are neural networks, specifically
+  transformers. The architecture has been the same since 2017; what has changed is
+  scale and how we post-train.
+- ❌ GPT-4 is much better than GPT-2 because the architecture is much better → ✅
+  Mostly it is bigger, trained on more and better data, and post-trained more
+  sophisticatedly. The architecture is essentially the same.
+- ❌ Reasoning models (o1, R1, extended thinking) are a new architecture → ✅ Same
+  transformer; the change is what they are trained to *do* — produce useful
+  intermediate tokens before answering.
+- ❌ ChatGPT was a new model in 2022 → ✅ ChatGPT was the same family of base model
+  with new post-training (SFT + RLHF) on top, packaged in a chat product. The base
+  model alone is not a chatbot.
+
+### Worked example
+
+Consider how machine translation evolved, because the same arc plays out in every
+sequence task.
+
+In 2014, a state-of-the-art neural translator was a seq2seq LSTM with attention: the
+encoder LSTM read the source sentence into a hidden state, and attention let the
+decoder LSTM look back at any encoder position when producing each output word. It
+beat phrase-based statistical translation but was slow to train (sequential), capped
+in effective context length (long sentences hurt quality), and plateaued in BLEU
+score.
+
+In 2017, the transformer replaced both LSTMs with stacks of attention + FFN. Same
+*task* (translate this sentence), same *training data*, vastly better numbers — and
+crucially, training could now use the entire GPU in parallel rather than processing
+one token at a time. That parallelism is what let researchers scale to vastly larger
+models on the same hardware, which is what eventually produced the GPT line.
+
+The lesson is structural: when a *system* you are reasoning about does something
+better than the previous one, ask whether the architecture is new or whether the same
+architecture is being scaled or post-trained differently. In LLM land, since 2017,
+the answer is almost always the latter.
+
+---
+
 ## 1.1 — What an LLM is — next-token prediction as the whole job
 
 ### Concept
@@ -212,14 +362,20 @@ application-layer engineering, not the model learning.)
 
 ### Check questions
 
-1. A product manager asks: "10,000 users corrected the model on the same fact this
-   month — surely by now the model has *learned* it?" Explain why this is false and what
-   *would* have to happen for those corrections to change the model. — **Answer:**
-   Inference never updates weights, so 10,000 corrections during use change nothing —
-   each was just transient context for its own request. For the corrections to actually
-   change the model, someone would have to *curate* them into a dataset and run a
-   deliberate, offline fine-tuning (or post-training) job; usage volume alone has zero
-   effect on the weights.
+1. A team logs every user "correction" sent to the model in production and points to
+   the volume as evidence that "the model has learned this by now." Two things are
+   wrong with their reasoning. (a) Why does the *volume* not matter — what would 1 vs.
+   1,000 vs. 1,000,000 corrections each individually do to the weights? (b) What
+   deliberate process *would* turn those logged corrections into a real weight change?
+   — **Answer:** (a) Each correction is just transient context for its own forward
+   pass — when that request ends, the input is gone and the weights are byte-identical
+   to what they were before. The count is irrelevant: 1, 1,000, and 1,000,000
+   corrections each individually do *zero* to the weights, and zero × any number is
+   still zero. Aggregation across users does not happen at the weight level; the model
+   has no mechanism to combine separate inference calls. (b) Someone would have to
+   *curate* the logged corrections into a training dataset and run a deliberate,
+   offline fine-tuning (or post-training) job. Usage volume influences the model only
+   if a human turns it into training data.
 2. Within a single chat, you tell the model your name and it uses it for ten turns —
    yet you never fine-tuned anything. Reconcile "the model did not learn" with "it
    clearly remembers my name." — **Answer:** Both are true because "remember" here is not
@@ -239,148 +395,143 @@ application-layer engineering, not the model learning.)
 
 ## 1.3 — The transformer at a block level — embeddings → attention → FFN → unembedding
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §1.4. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
 
-Nearly every modern LLM is a **transformer**. You do not need the backprop math, but
-you must be able to whiteboard the data flow. Follow a token sequence through the
-network.
+### Overview — Concept
 
-**1. Embedding.** Each input token (an integer ID from the vocabulary) is mapped to a
-vector of numbers — its **embedding** — via a lookup in the embedding matrix. A vector
-might have, say, 4096 dimensions. This vector is the model's internal representation of
-that token's meaning. Because the transformer has no inherent sense of order,
-**positional information** is also injected here (or inside attention, e.g., RoPE) so
-the model knows token 5 came before token 6.
+Before drawing the transformer, anchor what kind of computational object we are
+talking about.
 
-**2. Transformer blocks (the bulk of the model).** The sequence of embedding vectors
-passes through a stack of identical **transformer blocks** — dozens of them in a large
-model. Each block has two main sub-layers:
+An LLM is a **neural network**: a stack of layers where each layer is essentially a
+large matrix multiplication followed by a non-linear function (an *activation*). A
+token goes in as a vector of numbers; each layer transforms that vector; the final
+layer's vector is mapped to a score for every word in the vocabulary. That is the
+whole forward pass — multiplications, additions, non-linearities, in sequence. There
+is no symbolic logic, no database, no rules engine. The entire behavior of the model
+lives in the values of those matrices (§1.2's "weights").
 
-- **Self-attention** — lets each token's vector pull in information from other tokens
-  in the sequence. This is the mechanism by which context flows: the representation of
-  the word `it` can incorporate information from the noun it refers to earlier in the
-  sentence. (Full detail in 1.4.)
-- **Feed-forward network (FFN/MLP)** — a position-wise neural network applied
-  independently to each token's vector. If attention *mixes information across
-  positions*, the FFN *processes the information at each position*. The FFN holds a
-  large share of the model's parameters and is widely understood to be where much
-  factual knowledge is stored.
+Where do those matrix values come from? Training (§1.2 covered this). Start with
+random matrices, run a forward pass, compute the loss, backpropagate, adjust. Repeat
+trillions of times. You do not need the backprop math for this course; what matters
+is that an LLM is a neural network whose matrices have been tuned by gradient
+descent. Nothing else is going on.
 
-Each sub-layer is wrapped with a **residual connection** (the input is added back to
-the output, so information and gradients flow cleanly through a deep stack) and a
-**normalization** step (which keeps the numbers in a stable range). Two details of that
-normalization are the modern default and worth knowing. First, *what* normalizer:
-frontier models have largely moved from classic layer normalization to **RMSNorm**
-(root-mean-square normalization), a simpler, cheaper variant that rescales activations
-by their root-mean-square without subtracting a mean — it trains comparably and costs
-less compute. Second, *where* the norm sits relative to the sub-layer: in **pre-norm**
-placement (the modern standard) the norm is applied to the sub-layer's *input*, so the
-residual path stays a clean, unnormalized highway from the first block to the last; the
-older **post-norm** placement normalized the *output* after the residual add, which
-makes very deep stacks much harder to train (gradients are repeatedly rescaled on the
-main path). Pre-norm with RMSNorm is the combination you should assume for a current
-model. Stacking many blocks lets the model build progressively more abstract
-representations: early layers capture surface features, later layers capture semantics
-and task structure.
-
-**3. Unembedding (the LM head).** After the final block, each position holds a
-context-rich vector. To predict the next token, the model projects the final vector
-through the **unembedding matrix** (the "language-model head"), producing one score per
-vocabulary token. Those raw scores are the **logits** (1.6). A softmax turns them into a
-probability distribution.
-
-So the whole network is: **embed → [attention → FFN] × N → unembed → logits**. Two
-intuitions to keep: attention is the *only* place tokens talk to each other (everything
-else is position-wise), and the FFN layers carry most of the parameters and most of the
-stored knowledge.
-
-Here is the data flow you should be able to whiteboard end to end:
+The **transformer** is the specific neural-network architecture used by every modern
+LLM. The thing that distinguishes it from earlier architectures is that each output
+position can attend to every input position in parallel (per §1.0). Below is the data
+flow at the highest level — what every Phase 1 student needs to be able to
+whiteboard:
 
 ```
-  token IDs                  [ 791 ,  9059 ,  7731 ]   ("The cat sat")
+  token IDs              [ 791 ,  9059 ,  7731 ]   ("The cat sat")
        │
        ▼
   embedding lookup  +  positional info
        │
        ▼
-  embedding vectors          [ v₁ ] [ v₂ ] [ v₃ ]      (one vector per token)
+  embedding vectors      [ v₁ ] [ v₂ ] [ v₃ ]
        │
        ▼
-  ┌─────────────────────────────────────────────────┐
-  │  TRANSFORMER BLOCK  (× N, identical structure)   │
-  │                                                  │
-  │     x ──┬──────────────────────────────┐         │
-  │         │                              │         │
-  │      RMSNorm  (pre-norm)                │         │
-  │         │                              │ residual│
-  │   self-attention  (mixes positions)     │         │
-  │         │                              │         │
-  │         └────────────► (+) ◄────────────┘         │
-  │                         │                        │
-  │     x ──┬───────────────┴──────────────┐         │
-  │         │                              │         │
-  │      RMSNorm  (pre-norm)                │         │
-  │         │                              │ residual│
-  │      FFN / MLP  (per-position)          │         │
-  │         │                              │         │
-  │         └────────────► (+) ◄────────────┘         │
-  │                         │                        │
-  └─────────────────────────┼────────────────────────┘
-                            ▼
+  ┌─────────────────────────────────────────────┐
+  │  TRANSFORMER BLOCK (× N — identical layout)  │
+  │                                              │
+  │      self-attention  (mixes positions)       │
+  │             │                                │
+  │             ▼                                │
+  │      feed-forward network  (per position)    │
+  │                                              │
+  └──────────────────────┬───────────────────────┘
+                         ▼
               final context-rich vectors
-                            │
-                            ▼
-              unembedding / LM head   (project last position)
-                            │
-                            ▼
-              logits   [ ~100k raw scores, one per vocab token ]
-                            │
-                            ▼
-              softmax  →  probability distribution over the vocabulary
+                         │
+                         ▼
+              unembedding / LM head  (project last position)
+                         │
+                         ▼
+              logits  [ ~100k raw scores, one per vocab token ]
+                         │
+                         ▼
+              softmax  →  probability distribution
 ```
 
-Note the two clean residual highways inside each block — the input is added back after
-each sub-layer — and that the norm sits on each sub-layer's *input* (pre-norm).
+Three stages, in order:
 
-### Key terms
+1. **Embedding.** Each input token ID is converted to a vector (its *embedding*) via
+   a lookup in the embedding matrix. **Positional information** is added so the
+   model knows the order of the tokens. After this step, you have one vector per
+   token.
 
-- **Transformer** — the neural-network architecture underpinning modern LLMs, built
-  from stacked attention + FFN blocks.
-- **Embedding** — the vector representation of a token; produced by an embedding-matrix
-  lookup.
-- **Positional encoding** — information added so the model knows token order; modern
-  models often use RoPE (rotary position embeddings).
-- **Transformer block** — one repeated unit: self-attention sub-layer + FFN sub-layer,
-  with residual connections and layer norm.
+2. **Transformer blocks (the bulk of the model).** The sequence of embedding vectors
+   passes through a stack of identical **transformer blocks** — dozens of them.
+   Each block does two things:
+   - **Self-attention** — lets each token's vector pull in information from other
+     tokens in the sequence. This is the mechanism by which context flows: the
+     representation of `it` can incorporate information from the noun it refers to.
+     **Attention is the only place in the model where tokens talk to each other.**
+     (The full mechanism is §1.4.)
+   - **Feed-forward network (FFN/MLP)** — a small neural network applied
+     independently to each token's vector. If attention *mixes information across
+     positions*, the FFN *processes the information at each position*. The FFN
+     holds most of the model's parameters and is widely understood to store most of
+     the factual knowledge.
+
+   Each block also has structural plumbing (residual connections, normalization)
+   that makes the deep stack trainable. The deep dive covers the mechanics; for the
+   overview, take it on faith that these exist and they work.
+
+3. **Unembedding (the LM head).** After the final block, each position holds a
+   context-rich vector. To predict the next token, the model projects the final
+   vector through the **unembedding matrix**, producing one score per vocabulary
+   token. Those raw scores are the **logits** (§1.6). A softmax turns them into a
+   probability distribution.
+
+So the whole network is: **embed → [attention → FFN] × N → unembed → logits**. The
+two intuitions to keep are: attention is the *only* cross-position mechanism (everything
+else is position-wise), and the FFN layers carry most of the parameters and most of
+the stored knowledge.
+
+### Overview — Key terms
+
+- **Neural network** — a stack of matrix multiplications and non-linear activations;
+  the underlying object an LLM is.
+- **Transformer** — the specific neural-network architecture used by every modern
+  LLM; stacked self-attention + FFN blocks.
+- **Embedding** — the vector representation of a token; produced by an
+  embedding-matrix lookup.
+- **Positional encoding** — information added so the model knows token order (the
+  transformer is order-agnostic by default).
+- **Transformer block** — one repeated unit: self-attention sub-layer + FFN
+  sub-layer, plus plumbing covered in the deep dive.
+- **Self-attention** — the mechanism by which each token's vector pulls in
+  information from other tokens; the only cross-position mechanism in the model.
+  (Mechanism in §1.4.)
 - **Feed-forward network (FFN/MLP)** — a position-wise network inside each block;
-  processes each token independently; holds most parameters and much factual knowledge.
-- **Residual connection** — adds a sub-layer's input to its output; enables training of
-  very deep stacks.
-- **Normalization (LayerNorm / RMSNorm)** — normalizes activations to keep numerical
-  scale stable; frontier models default to **RMSNorm**, a cheaper mean-free variant.
-- **Pre-norm vs. post-norm** — whether the normalizer is applied to a sub-layer's
-  *input* (pre-norm, the modern default — keeps the residual path clean and lets very
-  deep stacks train) or to its *output* after the residual add (post-norm — harder to
-  train deep).
-- **Unembedding / LM head** — the final projection from a token's vector to one logit
-  per vocabulary entry.
+  processes each token independently; holds most parameters and much factual
+  knowledge.
+- **Unembedding / LM head** — the final projection from a token's vector to one
+  logit per vocabulary entry.
+- **Logits** — the raw scores output by the unembedding step, before softmax (§1.6).
 
-### Common misconceptions
+### Overview — Common misconceptions
 
-- ❌ Attention is the whole transformer → ✅ Attention mixes information across
-  positions; the FFN does most of the per-position computation and holds most
+- ❌ Attention is the whole transformer → ✅ Attention only mixes information across
+  positions; the FFN does most of the per-position computation and holds most of the
   parameters.
 - ❌ The FFN looks at other tokens → ✅ The FFN is strictly position-wise; only
   attention moves information between positions.
 - ❌ Transformers inherently understand word order → ✅ They are order-agnostic by
   default; positional encoding must be added explicitly.
-- ❌ Each layer does a totally different job → ✅ Blocks are architecturally identical;
-  they specialize through learned weights, with later layers more abstract.
-- ❌ Where the normalization sits is an irrelevant implementation detail → ✅ Pre-norm
-  (norm on the sub-layer input) keeps the residual path clean and is what lets very deep
-  modern transformers train; post-norm placement makes deep stacks much harder to train.
+- ❌ The model "looks up" knowledge from a database → ✅ All knowledge lives in the
+  values of the matrices; the forward pass is just matmuls, additions, and
+  activations.
 
-### Worked example
+### Overview — Worked example
 
 Trace `The cat sat` predicting the next token. `The`, `cat`, `sat` become three
 integer IDs → three embedding vectors, each with positional info. The stack of blocks
@@ -390,41 +541,165 @@ per position. After N blocks, the final vector at position `sat` is projected th
 the unembedding matrix into ~100k logits. Tokens like ` on`, ` down`, ` quietly` score
 high; ` purple` scores low. Softmax → probabilities → sample → next token.
 
-### Check questions
+### Overview — Check questions
 
-1. Imagine you deleted *all* the self-attention sub-layers from a transformer but kept
-   the embeddings and FFNs. What single capability would the model lose, and what would
-   it then resemble? — **Answer:** It would lose the ability for any token's
-   representation to depend on any *other* token — every position would be processed in
-   total isolation. The model would resemble a per-token classifier with no context: it
-   could not resolve "it" to an earlier noun, could not condition `Paris` on "capital of
-   France," etc. This isolates *why* attention, not the FFN, is the cross-position
-   mechanism.
-2. A teammate proposes removing residual connections "to simplify the architecture,
-   since they're just an addition." Why would a deep transformer become hard to *train*
-   without them? — **Answer:** The residual add gives information and, critically,
-   gradients a direct path through every block. Without it, gradients must pass through
-   dozens of sub-layers' transformations and tend to vanish or explode, so the deep stack
-   becomes very hard to optimize. The "just an addition" is load-bearing — it is what
-   makes training a deep stack tractable.
-3. A model with a 100,000-token vocabulary is asked to predict one next token. Roughly
-   how many numbers does the unembedding step produce, what are they *before*
-   normalization, and why is that step the same regardless of how confident the model
-   is? — **Answer:** It produces ~100,000 numbers — one logit per vocabulary token.
-   Before softmax they are raw, unbounded real scores, not probabilities. The unembedding
-   always emits the full vector of vocabulary logits every step; "confidence" is a
-   property of the *distribution* softmax produces, not of how many logits are computed.
-4. A team trains a deep transformer with the normalization placed *after* each
-   sub-layer's residual add (post-norm) and finds the deep version barely trains, while
-   a shallow version is fine. They have residual connections, so why does depth still
-   break training — and what placement is the modern fix? — **Answer:** With post-norm,
-   the normalizer sits *on* the main path after the residual add, so the signal is
-   re-scaled at every one of the dozens of blocks; the residual is no longer a clean,
-   unmodified highway, and gradients/activations are repeatedly distorted as depth grows.
-   The modern fix is **pre-norm** placement: normalize each sub-layer's *input* instead,
-   leaving the residual path itself untouched from the first block to the last — which is
-   precisely what lets very deep stacks train. (Most current models also use RMSNorm
-   rather than classic LayerNorm, a cheaper mean-free variant.)
+1. Imagine you deleted *all* the self-attention sub-layers from a transformer but
+   kept the embeddings and FFNs. What single capability would the model lose, and
+   what would it then resemble? — **Answer:** It would lose the ability for any
+   token's representation to depend on any *other* token — every position would be
+   processed in total isolation. The model would resemble a per-token classifier
+   with no context: it could not resolve "it" to an earlier noun, could not
+   condition `Paris` on "capital of France," etc. This isolates *why* attention,
+   not the FFN, is the cross-position mechanism.
+2. A model with a 100,000-token vocabulary is asked to predict one next token.
+   Roughly how many numbers does the unembedding step produce, what are they
+   *before* normalization, and why is that step the same regardless of how
+   confident the model is? — **Answer:** It produces ~100,000 numbers — one logit
+   per vocabulary token. Before softmax they are raw, unbounded real scores, not
+   probabilities. The unembedding always emits the full vector of vocabulary logits
+   every step; "confidence" is a property of the *distribution* softmax produces,
+   not of how many logits are computed.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview said "each block has structural plumbing — residuals, normalization —
+that makes the deep stack trainable" and asked you to take that on faith. This
+section unpacks the plumbing. It is interview-bait (these specifics get asked about
+on senior interviews), but it is **not required** to advance and is not in the
+topic exam.
+
+**Residual connections.** Each sub-layer (attention or FFN) is wrapped with a
+**residual connection**: the input is added back to the output. Inside a block, the
+attention output is `attention(x) + x`, and the FFN output is `FFN(…) + …`. This is
+"just an addition," but it is load-bearing — it gives information and, critically,
+gradients a direct path through every block. Without residuals, signals must pass
+through dozens of sub-layers' transformations on the main path; gradients tend to
+vanish or explode, and the deep stack becomes intractable to train. The residual is
+what makes a 60-layer transformer no harder to optimize than a 6-layer one.
+
+**Normalization (RMSNorm).** Each sub-layer is also wrapped with a **normalization**
+step that rescales activations to a stable numerical range. Frontier models have
+largely moved from classic **layer normalization (LayerNorm)** — which both centers
+(subtracts mean) and rescales — to **RMSNorm**, a cheaper variant that rescales by
+root-mean-square *without* subtracting a mean. RMSNorm trains comparably and costs
+less compute per token. When you read "transformer," assume RMSNorm by default for
+a modern model.
+
+**Pre-norm vs. post-norm placement.** Where the normalizer sits relative to the
+sub-layer matters more than which normalizer you use. In **pre-norm** placement
+(the modern standard), the norm is applied to the sub-layer's *input* — the
+residual path stays a clean, unnormalized highway from the first block to the last.
+In the older **post-norm** placement, the norm sits *after* the residual add, on
+the main path; the signal is repeatedly rescaled at every one of the dozens of
+blocks, distorting gradients and making very deep stacks much harder to train.
+Pre-norm is why modern transformers can be 80+ layers deep and still train. When
+you see a current architecture's block diagram, assume pre-norm.
+
+**Positional encoding (more detail).** Because the transformer has no recurrence
+and no convolution, it is intrinsically order-agnostic — without help, it would
+treat `cat sat the` the same as `the cat sat`. Modern models commonly use **RoPE
+(rotary position embeddings)**: instead of adding a fixed positional vector to the
+embedding, RoPE rotates the query and key vectors inside attention by an angle
+proportional to position. This encodes *relative* position naturally and
+generalizes better to longer contexts than the original additive positional
+encodings.
+
+**The full block diagram with plumbing.** Here is the same transformer block from
+the Overview, this time showing the residual highways and pre-norm placement:
+
+```
+  ┌─────────────────────────────────────────────────┐
+  │  TRANSFORMER BLOCK  (× N, identical structure)   │
+  │                                                  │
+  │     x ──┬──────────────────────────────┐         │
+  │         │                              │         │
+  │      RMSNorm  (pre-norm)               │         │
+  │         │                              │ residual│
+  │   self-attention  (mixes positions)    │         │
+  │         │                              │         │
+  │         └────────────► (+) ◄───────────┘         │
+  │                         │                        │
+  │     x ──┬───────────────┴──────────────┐         │
+  │         │                              │         │
+  │      RMSNorm  (pre-norm)               │         │
+  │         │                              │ residual│
+  │      FFN / MLP  (per-position)         │         │
+  │         │                              │         │
+  │         └────────────► (+) ◄───────────┘         │
+  │                         │                        │
+  └─────────────────────────┼────────────────────────┘
+```
+
+Notice the two clean residual highways inside each block and that each norm sits on
+its sub-layer's *input* (pre-norm).
+
+### Deep dive — Key terms
+
+- **Residual connection** — adds a sub-layer's input back to its output; enables
+  training of very deep stacks by giving gradients a direct path.
+- **LayerNorm** — classic normalization: center (subtract mean) and rescale.
+- **RMSNorm** — the modern default: rescale by root-mean-square without centering;
+  cheaper and competitive in quality.
+- **Pre-norm** — placing the normalizer on the sub-layer's *input*; keeps the
+  residual path clean; the modern default.
+- **Post-norm** — placing the normalizer *after* the residual add; distorts the
+  main path at every block; makes deep stacks much harder to train.
+- **RoPE (rotary position embeddings)** — a modern positional-encoding scheme that
+  rotates Q and K vectors by position-dependent angles inside attention.
+
+### Deep dive — Common misconceptions
+
+- ❌ Residual connections are a minor optimization → ✅ They are load-bearing:
+  without them, gradients vanish in deep stacks and training breaks. On a
+  whiteboard the residual is the *single most important structural feature* of a
+  deep transformer.
+- ❌ Where the normalization sits is an irrelevant implementation detail → ✅
+  Pre-norm vs post-norm decides whether a 60-layer transformer trains at all.
+- ❌ LayerNorm is still the standard → ✅ Modern frontier models almost all use
+  RMSNorm.
+
+### Deep dive — Worked example
+
+Take the same `The cat sat` trace from the Overview. With residuals and pre-norm in
+view, what happens *inside* one transformer block on the vector at position `sat`:
+
+1. Input vector `x` arrives at the attention sub-layer.
+2. RMSNorm is applied to `x` (pre-norm) and the result is fed into self-attention.
+   Self-attention pulls in info from `cat` and `The`.
+3. The attention output is added back to the original `x`:
+   `x' = attention(RMSNorm(x)) + x`.
+4. `x'` arrives at the FFN sub-layer. RMSNorm is applied to `x'`, the result goes
+   through the FFN, and the FFN output is added back:
+   `x'' = FFN(RMSNorm(x')) + x'`.
+5. `x''` goes to the next block, where the whole thing repeats.
+
+Two things to notice: the original input is added back *twice* per block (one
+residual per sub-layer), and the RMSNorm never sits on the main residual highway —
+it always sits on a side path *into* the sub-layer. That is what "pre-norm" means
+in practice.
+
+### Deep dive — Check questions
+
+1. A teammate proposes removing residual connections "to simplify the architecture,
+   since they're just an addition." Why would a deep transformer become hard to
+   *train* without them? — **Answer:** The residual add gives information and,
+   critically, gradients a direct path through every block. Without it, gradients
+   must pass through dozens of sub-layers' transformations and tend to vanish or
+   explode, so the deep stack becomes very hard to optimize. The "just an addition"
+   is load-bearing — it is what makes training a deep stack tractable.
+2. A team trains a deep transformer with the normalization placed *after* each
+   sub-layer's residual add (post-norm) and finds the deep version barely trains,
+   while a shallow version is fine. They have residual connections, so why does
+   depth still break training, and what placement is the modern fix? — **Answer:**
+   With post-norm, the normalizer sits on the main path after the residual add, so
+   the signal is re-scaled at every one of the dozens of blocks; the residual is no
+   longer a clean, unmodified highway, and gradients/activations are repeatedly
+   distorted as depth grows. The modern fix is **pre-norm** placement: normalize
+   each sub-layer's *input* instead, leaving the residual path itself untouched
+   from the first block to the last — which is precisely what lets very deep stacks
+   train. (Most current models also use RMSNorm rather than classic LayerNorm.)
 
 ---
 
@@ -1219,9 +1494,9 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    model. — **Answer:** False. GQA keeps every query head; it shares a single key/value
    pair across a *group* of heads, shrinking only the K/V part of the cache — no query
    head is removed.
-10. Placing the normalization on a sub-layer's input (pre-norm) rather than after the
-    residual add (post-norm) is the placement that makes very deep transformers
-    trainable. — **Answer:** True. Pre-norm keeps the residual path a clean, unmodified
+10. [deep-dive] Placing the normalization on a sub-layer's input (pre-norm) rather
+    than after the residual add (post-norm) is the placement that makes very deep
+    transformers trainable. — **Answer:** True. Pre-norm keeps the residual path a clean, unmodified
     highway through the whole stack; post-norm rescales the main path at every block,
     which makes deep stacks much harder to train.
 11. Speculative decoding speeds up generation by letting a small draft model approximate
@@ -1544,3 +1819,9 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
 [1] Dao, Fu, Ermon, Rudra, Ré — "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness" (NeurIPS 2022) — https://arxiv.org/abs/2205.14135
 [2] Anthropic — Pricing (Claude API docs; every current Claude model prices output at 5× input) — https://platform.claude.com/docs/en/about-claude/pricing
 [3] Meta AI — Introducing Meta Llama 3 (128K-token tokenizer vocabulary) — https://ai.meta.com/blog/meta-llama-3/
+[4] Bahdanau, Cho, Bengio — "Neural Machine Translation by Jointly Learning to Align and Translate" (ICLR 2015) — https://arxiv.org/abs/1409.0473
+[5] Vaswani et al. — "Attention Is All You Need" (NeurIPS 2017) — https://arxiv.org/abs/1706.03762
+[6] Kaplan et al. — "Scaling Laws for Neural Language Models" (2020) — https://arxiv.org/abs/2001.08361
+[7] Hoffmann et al. — "Training Compute-Optimal Large Language Models" (Chinchilla, 2022) — https://arxiv.org/abs/2203.15556
+[8] Ouyang et al. — "Training language models to follow instructions with human feedback" (InstructGPT, 2022) — https://arxiv.org/abs/2203.02155
+[9] DeepSeek-AI — "DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning" (2025) — https://arxiv.org/abs/2501.12948

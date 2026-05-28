@@ -370,13 +370,141 @@ thousands of tokens, so it is only economical behind a prompt cache (Topic 6).
 
 ## 5.3 — Chain-of-thought; how reasoning models changed it
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §5.4. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 **Chain-of-thought (CoT)** prompting asks the model to produce intermediate reasoning
 steps before its final answer, instead of jumping straight to the answer. The classic
 trigger is "Let's think step by step" or "Show your work." For multi-step arithmetic,
 logic, and planning, CoT produces large, well-documented accuracy gains on non-reasoning
 models.
+
+There are two flavors. **Zero-shot CoT** just adds the trigger phrase. **Few-shot CoT**
+provides examples where the worked reasoning is shown, so the model imitates the
+reasoning *style*. CoT also has a side benefit: the reasoning trace is somewhat
+inspectable, which helps debugging and evals — though the trace is not a faithful log
+of the model's internal computation, only a plausible narrative.
+
+**Reasoning models changed this.** Models like the OpenAI o-series, Claude with extended
+thinking, Gemini's thinking models, and DeepSeek-R1 are post-trained with reinforcement
+learning on verifiable rewards specifically to *do* extended internal reasoning before
+answering. They generate "thinking tokens" (often in a separate, sometimes hidden,
+channel) automatically. Implications for prompting:
+
+- **You no longer need to ask for step-by-step reasoning** — the model already does it.
+  Adding "think step by step" is redundant and can even interfere.
+- **Telling a reasoning model exactly how to reason can hurt.** Prescriptive CoT
+  scaffolding can constrain a process the model is better at running itself. Prefer
+  stating the *goal and constraints* and letting it reason.
+- **Few-shot examples often help less or hurt** with reasoning models (see 5.2).
+- **You control reasoning effort, not reasoning presence.** Reasoning models expose a
+  budget or effort knob and you tune *how much* it thinks, trading latency and cost for
+  accuracy. (Provider-specific knob names are in the deep dive.)
+- **Thinking tokens cost money and latency.** They are billed as output tokens and add
+  to TTFT/total latency. Use a high reasoning budget for genuinely hard tasks; for
+  simple tasks it is wasted spend.
+
+So the modern rule of thumb: for a *non-reasoning* model on a multi-step task, prompt
+for CoT explicitly. For a *reasoning* model, don't — give it a clear objective and tune
+its effort level instead.
+
+The two model classes call for opposite prompting moves:
+
+| Aspect              | Non-reasoning model                          | Reasoning model                                     |
+|---------------------|-----------------------------------------------|-----------------------------------------------------|
+| Prompt for CoT?     | Yes — add "think step by step" on multi-step tasks | No — it already reasons; the trigger is redundant and can interfere |
+| Few-shot examples?  | Often helps (especially for *form*)            | Often neutral or harmful — can constrain its own reasoning |
+| What knob?          | Wording of the CoT scaffold; temperature       | Reasoning-effort / thinking-budget knob              |
+
+### Overview — Key terms
+
+- **Chain-of-thought (CoT)** — prompting the model to emit intermediate reasoning before
+  the final answer.
+- **Zero-shot CoT** — eliciting reasoning with a trigger phrase alone.
+- **Few-shot CoT** — providing examples that show worked reasoning so the model imitates
+  the reasoning style.
+- **Reasoning model** — a model RL-trained to perform extended internal reasoning
+  automatically before answering.
+- **Thinking tokens** — the reasoning tokens a reasoning model generates; billed as
+  output, often in a separate channel.
+- **Reasoning effort / thinking budget** — a knob controlling how much a reasoning model
+  thinks before answering.
+
+### Overview — Common misconceptions
+
+- ❌ CoT lets you see the model's true internal computation. → ✅ The trace is a
+  plausible narrative, not a faithful log; the model can reach the right answer for
+  reasons the trace doesn't reflect.
+- ❌ Adding "think step by step" always helps. → ✅ It helps non-reasoning models on
+  multi-step tasks; on reasoning models it is redundant and can interfere.
+- ❌ Reasoning models are strictly better, so always use them. → ✅ They cost more
+  tokens and latency for the thinking phase; for simple tasks a fast non-reasoning model
+  is the right choice.
+
+### Overview — Worked example
+
+Non-reasoning model, no CoT — a genuinely multi-step task (sum a list, subtract a
+discount, then apply tax):
+
+```
+Q: An order has items at $40, $25, and $15. Apply a 10% discount, then add 8% sales
+   tax. What is the final total?
+A: $80
+```
+
+(Often wrong because the model commits to an answer token immediately, skipping the
+chain of dependent sub-computations.)
+
+With zero-shot CoT:
+
+```
+Q: An order has items at $40, $25, and $15. Apply a 10% discount, then add 8% sales
+   tax. What is the final total? Think step by step.
+A: Step 1 — sum the items: 40 + 25 + 15 = 100.
+   Step 2 — apply the 10% discount: 100 × 0.90 = 90.
+   Step 3 — apply 8% tax: 90 × 1.08 = 97.20.
+   Answer: $97.20.
+```
+
+With a reasoning model you would simply ask the question without "think step by step" —
+it produces the intermediate steps internally and you'd set effort to `low` since the
+task is easy.
+
+### Overview — Check questions
+
+1. A team's product code uses a non-reasoning model with a careful "think step by step,
+   list each step, then answer" instruction, and accuracy is good. They upgrade to a
+   reasoning model and keep the exact same prompt. Latency rises and quality is flat or
+   slightly worse. Diagnose, and say what should have changed in the prompt and the
+   config. — **Answer:** The hand-written CoT scaffold is now redundant — the reasoning
+   model already reasons internally — and prescriptive step instructions can constrain
+   the process it runs better itself. The upgrade is effectively a prompt change. Fix:
+   strip the step-by-step scaffold down to a clear objective plus constraints, and use
+   the model's reasoning-effort knob to dial depth, instead of scripting the reasoning in
+   the prompt.
+2. An auditor wants to certify *why* a reasoning model approved a loan, and proposes
+   reading its chain-of-thought trace as the official record of its reasoning. What's
+   the flaw in that plan? — **Answer:** A CoT trace is a plausible narrative, not a
+   faithful log of the model's internal computation — the model can reach an answer for
+   reasons the trace doesn't reflect, or rationalize after the fact. The trace is useful
+   for debugging and spotting obvious errors, but it cannot serve as an authoritative
+   audit of the true cause of a decision.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview said CoT produces large accuracy gains on non-reasoning multi-step tasks
+and left *why* it works as a black box. This section opens the box. It is
+interview-bait (the mechanism question gets asked on senior research and applied-AI
+interviews), but it is **not required** to advance and is not in the topic exam.
 
 *Why* CoT works is not fully settled, and it is worth holding two complementary
 hypotheses rather than one:
@@ -401,89 +529,47 @@ filler-token trace, while the pure "extra compute" view predicts even semantical
 filler can help. Evidence exists for each, so treat the mechanism as an open question
 rather than a settled fact — and do not over-claim either story when teaching it.
 
-There are two flavors. **Zero-shot CoT** just adds the trigger phrase. **Few-shot CoT**
-provides examples where the worked reasoning is shown, so the model imitates the
-reasoning *style*. CoT also has a side benefit: the reasoning trace is somewhat
-inspectable, which helps debugging and evals — though the trace is not a faithful log
-of the model's internal computation, only a plausible narrative.
+**Provider-specific effort-knob names.** The Overview noted that reasoning models expose
+a knob for how much they think; the exact name and values are provider- and
+version-specific. OpenAI uses a `reasoning_effort` parameter. Anthropic historically used
+a fixed `budget_tokens` thinking budget, but on Claude Opus 4.7 that was replaced by
+**adaptive thinking** plus an **`effort`** parameter (`low` / `medium` / `high` /
+`xhigh` / `max`).[6] Check current docs for the model you target — the knob names move
+between versions, but the concept (dial depth, pay for it in latency and output tokens)
+is stable.
 
-**Reasoning models changed this.** Models like the OpenAI o-series, Claude with extended
-thinking, Gemini's thinking models, and DeepSeek-R1 are post-trained with reinforcement
-learning on verifiable rewards specifically to *do* extended internal reasoning before
-answering. They generate "thinking tokens" (often in a separate, sometimes hidden,
-channel) automatically. Implications for prompting:
+### Deep dive — Key terms
 
-- **You no longer need to ask for step-by-step reasoning** — the model already does it.
-  Adding "think step by step" is redundant and can even interfere.
-- **Telling a reasoning model exactly how to reason can hurt.** Prescriptive CoT
-  scaffolding can constrain a process the model is better at running itself. Prefer
-  stating the *goal and constraints* and letting it reason.
-- **Few-shot examples often help less or hurt** with reasoning models (see 5.2).
-- **You control reasoning effort, not reasoning presence.** Reasoning models expose a
-  budget or effort knob and you tune *how much* it thinks, trading latency and cost for
-  accuracy. The exact knob is provider- and version-specific: OpenAI uses a
-  `reasoning_effort` parameter; Anthropic historically used a fixed `budget_tokens`
-  thinking budget, but on Claude Opus 4.7 that was replaced by **adaptive thinking** plus
-  an **`effort`** parameter (`low` / `medium` / `high` / `xhigh` / `max`).[6] Check
-  current docs for the model you target.
-- **Thinking tokens cost money and latency.** They are billed as output tokens and add
-  to TTFT/total latency. Use a high reasoning budget for genuinely hard tasks; for
-  simple tasks it is wasted spend.
+- **Extra-serial-compute hypothesis** — CoT helps because emitting intermediate tokens
+  spends additional forward passes, giving the model more total compute before it
+  commits to an answer.
+- **Scratchpad / context-as-serial-computation hypothesis** — CoT helps because the
+  intermediate tokens get written into the context and later steps attend to them,
+  chaining dependent sub-results the model could not hold in one forward pass.
+- **Load-bearing scratchpad value** — an intermediate result the next step *must* read
+  from the context to compute correctly; the marker that the trace is doing real work,
+  not just filling tokens.
+- **`reasoning_effort` (OpenAI) / `effort` (Anthropic, Opus 4.7+)** — the
+  provider-specific parameter names for the reasoning-effort knob; Anthropic's takes
+  `low` / `medium` / `high` / `xhigh` / `max`.
+- **`budget_tokens`** — Anthropic's older fixed thinking-token budget, replaced by
+  adaptive thinking + `effort` on Opus 4.7.
 
-So the modern rule of thumb: for a *non-reasoning* model on a multi-step task, prompt
-for CoT explicitly. For a *reasoning* model, don't — give it a clear objective and tune
-its effort level instead.
+### Deep dive — Common misconceptions
 
-The two model classes call for opposite prompting moves:
-
-| Aspect              | Non-reasoning model                          | Reasoning model                                     |
-|---------------------|-----------------------------------------------|-----------------------------------------------------|
-| Prompt for CoT?     | Yes — add "think step by step" on multi-step tasks | No — it already reasons; the trigger is redundant and can interfere |
-| Few-shot examples?  | Often helps (especially for *form*)            | Often neutral or harmful — can constrain its own reasoning |
-| What knob?          | Wording of the CoT scaffold; temperature       | Reasoning-effort / thinking-budget knob (`effort`, `reasoning_effort`) |
-
-### Key terms
-
-- **Chain-of-thought (CoT)** — prompting the model to emit intermediate reasoning before
-  the final answer.
-- **Zero-shot CoT** — eliciting reasoning with a trigger phrase alone.
-- **Reasoning model** — a model RL-trained to perform extended internal reasoning
-  automatically before answering.
-- **Thinking tokens** — the reasoning tokens a reasoning model generates; billed as
-  output, often in a separate channel.
-- **Reasoning effort / thinking budget** — a knob controlling how much a reasoning model
-  thinks before answering.
-
-### Common misconceptions
-
-- ❌ CoT lets you see the model's true internal computation. → ✅ The trace is a
-  plausible narrative, not a faithful log; the model can reach the right answer for
-  reasons the trace doesn't reflect.
 - ❌ It is settled that CoT works *purely* because the trace is a step-by-step
   scratchpad. → ✅ There are (at least) two live hypotheses — extra serial compute, and
   serial computation via tokens written into the context — and they are hard to
   separate; treat the mechanism as not fully resolved.
-- ❌ Adding "think step by step" always helps. → ✅ It helps non-reasoning models on
-  multi-step tasks; on reasoning models it is redundant and can interfere.
-- ❌ Reasoning models are strictly better, so always use them. → ✅ They cost more
-  tokens and latency for the thinking phase; for simple tasks a fast non-reasoning model
-  is the right choice.
+- ❌ The reasoning-effort knob has the same name across providers. → ✅ OpenAI uses
+  `reasoning_effort`; Anthropic on Opus 4.7 uses `effort` with `low`/`medium`/`high`/
+  `xhigh`/`max`; older Anthropic models took a fixed `budget_tokens`. Always check
+  current docs for the model you target.
 
-### Worked example
+### Deep dive — Worked example
 
-Non-reasoning model, no CoT — a genuinely multi-step task (sum a list, subtract a
-discount, then apply tax):
-
-```
-Q: An order has items at $40, $25, and $15. Apply a 10% discount, then add 8% sales
-   tax. What is the final total?
-A: $80
-```
-
-(Often wrong because the model commits to an answer token immediately, skipping the
-chain of dependent sub-computations.)
-
-With zero-shot CoT:
+Revisit the discount-plus-tax problem from the Overview with the scratchpad hypothesis
+in view:
 
 ```
 Q: An order has items at $40, $25, and $15. Apply a 10% discount, then add 8% sales
@@ -501,11 +587,13 @@ forward pass; writing it into the context lets Step 3 attend to it directly. Get
 wrong and Step 3 faithfully builds on the wrong number — which is exactly why the
 intermediate is worth surfacing.
 
-With a reasoning model you would simply ask the question without "think step by step" —
-it produces the intermediate steps internally and you'd set effort to `low` since the
-task is easy.
+Notice this is evidence for the *scratchpad* hypothesis: the content of Step 2 is doing
+real work for Step 3. Under the pure *extra-compute* hypothesis, even a semantically
+empty filler token between Q and A should help, because it would buy another forward
+pass. Both effects plausibly contribute in real prompts; this example just makes the
+scratchpad role concrete.
 
-### Check questions
+### Deep dive — Check questions
 
 1. Give the two leading hypotheses for *why* writing out reasoning steps improves
    answers, and explain why — under *either* hypothesis — CoT helps most on multi-step
@@ -519,23 +607,15 @@ task is easy.
    with several genuine dependent sub-computations — a multi-step problem. A single-fact
    lookup has no sub-steps to spread compute over or to record on a scratchpad, so extra
    reasoning tokens add cost without raising accuracy.
-2. A team's product code uses a non-reasoning model with a careful "think step by step,
-   list each step, then answer" instruction, and accuracy is good. They upgrade to a
-   reasoning model and keep the exact same prompt. Latency rises and quality is flat or
-   slightly worse. Diagnose, and say what should have changed in the prompt and the
-   config. — **Answer:** The hand-written CoT scaffold is now redundant — the reasoning
-   model already reasons internally — and prescriptive step instructions can constrain
-   the process it runs better itself. The upgrade is effectively a prompt change. Fix:
-   strip the step-by-step scaffold down to a clear objective plus constraints, and use
-   the model's reasoning-effort knob to dial depth, instead of scripting the reasoning in
-   the prompt.
-3. An auditor wants to certify *why* a reasoning model approved a loan, and proposes
-   reading its chain-of-thought trace as the official record of its reasoning. What's
-   the flaw in that plan? — **Answer:** A CoT trace is a plausible narrative, not a
-   faithful log of the model's internal computation — the model can reach an answer for
-   reasons the trace doesn't reflect, or rationalize after the fact. The trace is useful
-   for debugging and spotting obvious errors, but it cannot serve as an authoritative
-   audit of the true cause of a decision.
+2. An engineer ports a prompt from an OpenAI reasoning model to Claude Opus 4.7 and
+   keeps the line `reasoning_effort: "high"` in the request body. The call fails or is
+   silently ignored. What's the provider-specific issue, and what is the correct knob
+   on Opus 4.7? — **Answer:** `reasoning_effort` is OpenAI's parameter name; Anthropic
+   on Opus 4.7 uses **`effort`** with values `low` / `medium` / `high` / `xhigh` /
+   `max` (Opus 4.7 replaced the older fixed `budget_tokens` thinking budget with
+   adaptive thinking plus this `effort` knob). The fix is to rename the parameter and
+   pass one of the allowed string values. The general concept — dial reasoning depth,
+   pay for it in output tokens and latency — is portable; the parameter name is not.
 
 ---
 
@@ -1211,7 +1291,15 @@ The eval caught a regression that "looks fine" testing would have missed.
 
 ## 5.9 — Prompt optimization and meta-prompting
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §5.10. The
+> deep dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 Everything so far has treated prompt writing as a *human* craft: you reason about
 structure, examples, and placement, then hand-edit a string. That works, but it has two
@@ -1227,33 +1315,21 @@ of prompts for the one that scores best — rather than guess. This reframes 5.8
 "prompts as code with an eval suite" into "prompts as code you can also *train*."
 
 **Meta-prompting — the model improves the prompt.** The lightest-weight technique uses an
-LLM to critique or rewrite a prompt:
-
-- *Model-critiques-prompt.* You give a strong model the current prompt, a description of
-  the task, and a batch of failing examples, and ask it to diagnose why the prompt fails
-  and propose a revision. The model is often a better prompt engineer for *itself* than
-  a human is — it can articulate the ambiguity that tripped it up.
-- *Model-writes-prompt from a spec.* You describe the task in plain language and ask the
-  model to produce a well-structured prompt (some vendors ship a "prompt generator" or
-  "prompt improver" tool that does exactly this).
-- *Failure-driven loops.* Run the prompt on an eval set, collect the failures, feed them
-  back to the meta-prompt, get a revised prompt, re-evaluate. This is a hill-climbing
-  loop with the LLM as the proposal mechanism and the eval metric as the judge.
+LLM to critique or rewrite a prompt: give a strong model the current prompt, a task
+description, and a batch of failing examples, and ask it to diagnose and propose a
+revision. The model is often a better prompt engineer for *itself* than a human is — it
+can articulate the ambiguity that tripped it up. Wrap that in a failure-driven loop
+(run, collect failures, ask for a revision, re-evaluate) and you have a hill-climber
+with the LLM as the proposal mechanism and the eval metric as the judge.
 
 The critical discipline: a meta-prompting revision is still just a *candidate*. It is
 only an improvement if it *measures* better on the eval set. Meta-prompting without an
 eval harness is just asking a model for an opinion.
 
-**Automatic prompt optimization (APO).** Beyond ad-hoc loops, there are systematic search
-methods. *APE* (Automatic Prompt Engineer) has a model generate many candidate
-instructions, scores each on the eval set, and keeps the best.[9] *Evolutionary /
-iterative* methods (e.g. ProTeGi, OPRO) treat prompts as a population: generate
-variants — often by asking an LLM to mutate or "edit toward higher score" — score them,
-keep the winners, repeat.[9] The common shape is always the same loop: **propose candidates → score on an eval
-set → select → repeat.** What differs is how candidates are proposed and how the search
-is steered.
-
-That loop is a 4-node cycle — every method here is a walk around it:
+**The common loop.** Every prompt-optimization method — meta-prompting, the named search
+algorithms in the deep dive, frameworks like DSPy — is a walk around the same 4-node
+cycle: **propose candidates → score on an eval set → select the best → repeat.** What
+differs is how candidates are proposed and how the search is steered.
 
 ```
         ┌──────────────────────────┐
@@ -1278,54 +1354,37 @@ That loop is a 4-node cycle — every method here is a walk around it:
    No eval set → no step 2 → no loop. The metric is what makes it a search.
 ```
 
-**DSPy — programming, not prompting.** DSPy is a framework that pushes this furthest.[8]
-You write a pipeline as *typed modules* with declared input/output **signatures** (e.g.
-`question -> answer`) instead of hand-written prompt strings. You supply a metric and a
-set of training examples. A DSPy **optimizer** (historically called a "teleprompter")
-then *compiles* the program: it searches for the prompt text and the few-shot examples
-that maximize your metric — for instance by bootstrapping few-shot demonstrations from
-the training data, or by proposing and selecting instruction wordings. The payoff is
-that when you change the model, you *recompile* rather than re-hand-tune every prompt —
-the optimization is reproducible and model-specific by construction. The mental shift
-DSPy forces: you specify *what* each step should do (the signature) and *how good* is
-defined (the metric), and you let the optimizer decide the exact prompt wording.
-
-The four approaches differ in how much of the prompt the human writes versus what a
-search procedure derives:
-
-| Approach                      | What the human specifies                          | What is searched                                  | Requires                                       |
-|-------------------------------|---------------------------------------------------|----------------------------------------------------|-------------------------------------------------|
-| Hand-writing                  | The entire prompt string                          | Nothing — the human *is* the optimizer             | Only intuition (and ideally an eval set to check)|
-| Meta-prompting (failure-loop) | The task description + a batch of failing cases   | Prompt revisions, proposed by an LLM, judged by the metric | An LLM proposer + an eval set            |
-| Automatic prompt optimization | The task + the metric; candidate-generation config | Instruction wordings (APE, OPRO, evolutionary)    | An eval set + a metric                          |
-| DSPy                          | A typed signature + a metric (not prompt text)    | Prompt wording *and* few-shot demonstrations        | An eval/training split + a metric               |
+**DSPy at one paragraph.** DSPy is a framework that pushes this furthest:[8] instead of
+writing prompt strings you declare typed module **signatures** (e.g.
+`question -> answer`) plus a metric, and an optimizer derives the prompt wording and
+few-shot examples that maximize the metric. The payoff is that when you change the
+model, you *recompile* rather than re-hand-tune every prompt. (The mechanics —
+teleprompters, bootstrap-few-shot, the compile step — are in the deep dive.)
 
 **When to invest.** Hand-writing is fine for one or two prompts, or early exploration
 when you do not yet have an eval set. Optimization pays off when (a) you have a real eval
 set and a clear metric, (b) you have several prompts or a pipeline to maintain, or
 (c) you change models often and want to re-tune cheaply. The hard prerequisite for *all*
 of it is the eval set — every method here is "search guided by a metric," and a search
-with no metric optimizes nothing. Two cautions: optimized prompts can **overfit** the
-eval set (hold out a test split), and an LLM-judged metric can be **gamed** by the
-optimizer (a prompt that flatters the judge rather than does the task) — so keep at least
-some ground-truth-checked or held-out evaluation in the loop.
+with no metric optimizes nothing.
 
-### Key terms
+### Overview — Key terms
 
 - **Prompt optimization** — improving prompts via a search or learning procedure against
   a metric, instead of by hand.
 - **Meta-prompting** — using an LLM itself to critique, rewrite, or generate a prompt.
 - **Model-critiques-prompt** — feeding a model its own prompt plus failing cases and
   asking it to diagnose and revise.
-- **Automatic prompt optimization (APO)** — systematic candidate-generation-and-scoring
-  search over prompts (APE, OPRO, evolutionary methods).
-- **DSPy / signature / optimizer** — a framework where you declare typed module
-  signatures and a metric, and an optimizer compiles the prompt text and few-shot
-  examples that maximize the metric.
-- **Compile (a prompt program)** — running an optimizer to derive the concrete prompts
-  for a declared pipeline; re-run on a model change.
+- **Failure-driven loop** — run the prompt, collect failures, feed them to a
+  meta-prompt for a revision, re-evaluate.
+- **Propose → score → select loop** — the 4-node cycle every prompt-optimization method
+  walks around.
+- **DSPy / signature** — a framework where you declare a typed module signature
+  (input → output types) plus a metric instead of writing the prompt string; an
+  optimizer compiles the concrete prompt and few-shot examples. Recompile on a model
+  change.
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ Prompt optimization replaces the eval set — the optimizer figures out what "good"
   means. → ✅ Every method is a *search guided by a metric*; without an eval set and a
@@ -1336,78 +1395,68 @@ some ground-truth-checked or held-out evaluation in the loop.
 - ❌ DSPy is just a prompt-template library. → ✅ DSPy's point is that you *don't* write
   the prompt — you declare a typed signature and a metric, and an optimizer derives the
   prompt text and few-shot examples; you recompile when the model changes.
-- ❌ An optimized prompt is strictly better. → ✅ It can overfit the eval set or game an
-  LLM judge; hold out a test split and keep some ground-truth evaluation.
 
-### Worked example
+### Overview — Worked example
 
-A classification prompt scores 0.71 F1 on a 300-example eval set. Three escalating
-approaches:
+A classification prompt scores 0.71 F1 on a 300-example eval set. You apply a
+meta-prompting failure-loop. Feed a strong model the current prompt plus 30 failing
+examples: "Here is the prompt, here are cases it got wrong with the correct labels.
+Diagnose why and rewrite the prompt." It returns a revision that sharpens an ambiguous
+category boundary. You re-run the eval: 0.71 → 0.78. Kept — because it *measured*
+better.
 
-1. *Meta-prompting.* Feed a strong model the current prompt plus 30 failing examples:
-   "Here is the prompt, here are cases it got wrong with the correct labels. Diagnose why
-   and rewrite the prompt." It returns a revision that sharpens an ambiguous category
-   boundary. You re-run the eval: 0.71 → 0.78. Kept — because it *measured* better.
+It is worth seeing the actual artifacts that move through this loop, not just the
+metric jump. **(a) The failing-cases payload** handed to the model:
 
-   It is worth seeing the actual artifacts that move through this loop, not just the
-   metric jump. **(a) The failing-cases payload** handed to the model:
+```
+<current_prompt>
+Classify each support message as billing, bug, or other.
+</current_prompt>
 
-   ```
-   <current_prompt>
-   Classify each support message as billing, bug, or other.
-   </current_prompt>
+<failing_cases>
+{ "message": "I was double-charged AND the receipt page is broken",
+  "predicted": "bug",     "correct": "billing" }
+{ "message": "My invoice shows the wrong tax rate",
+  "predicted": "other",   "correct": "billing" }
+{ "message": "Refund hasn't arrived after 5 days",
+  "predicted": "other",   "correct": "billing" }
+... 27 more ...
+</failing_cases>
 
-   <failing_cases>
-   { "message": "I was double-charged AND the receipt page is broken",
-     "predicted": "bug",     "correct": "billing" }
-   { "message": "My invoice shows the wrong tax rate",
-     "predicted": "other",   "correct": "billing" }
-   { "message": "Refund hasn't arrived after 5 days",
-     "predicted": "other",   "correct": "billing" }
-   ... 27 more ...
-   </failing_cases>
+Diagnose why the prompt produces these errors, then rewrite it.
+```
 
-   Diagnose why the prompt produces these errors, then rewrite it.
-   ```
+**(b) A snippet of the model's diagnosis:**
 
-   **(b) A snippet of the model's diagnosis:**
+```
+The errors cluster on messages that mention BOTH a billing problem and a
+technical symptom, or that describe a money problem without the word "charge".
+The prompt never says billing takes precedence, so the model picks bug or other.
+```
 
-   ```
-   The errors cluster on messages that mention BOTH a billing problem and a
-   technical symptom, or that describe a money problem without the word "charge".
-   The prompt never says billing takes precedence, so the model picks bug or other.
-   ```
+**(c) The one-line prompt edit it proposed:**
 
-   **(c) The one-line prompt edit it proposed:**
+```
++ If a message involves a payment, invoice, refund, or charge, label it
++ `billing` even when it also describes a technical fault.
+```
 
-   ```
-   + If a message involves a payment, invoice, refund, or charge, label it
-   + `billing` even when it also describes a technical fault.
-   ```
+That single added rule is the candidate — and it only counts as an improvement because
+the eval then confirmed 0.71 → 0.78. The throughline: propose → score on the eval set →
+keep if better. The eval set is what makes any of it real.
 
-   That single added rule is the candidate — and it only counts as an improvement
-   because the eval then confirmed 0.71 → 0.78.
-2. *Automatic prompt optimization.* Have a model generate 40 instruction variants, score
-   each on the eval set, keep the top one: 0.78 → 0.82.
-3. *DSPy.* Express the step as a signature `text -> label`, give it the metric (F1) and a
-   training split; the optimizer bootstraps the most useful few-shot demonstrations and
-   tunes the instruction: 0.82 → 0.86. When you later switch models, you recompile —
-   no hand-tuning.
-
-The throughline: each step is "propose → score on the eval set → keep if better." The
-eval set is what makes any of it real.
-
-### Check questions
+### Overview — Check questions
 
 1. A teammate says "we don't need an eval set — we'll just ask GPT to optimize our
    prompt for us." Explain why this misunderstands what prompt optimization *is*, and
    what the model can and cannot do without the eval set. — **Answer:** Every prompt
-   optimization method — meta-prompting loops, APE/OPRO, DSPy — is a *search guided by a
-   metric*: propose candidates, score them, keep the best. Without an eval set there is
-   no score, so there is nothing to optimize *toward*. The model *can* propose plausible
-   rewrites (it is a good candidate generator), but it *cannot* tell you whether a rewrite
-   is actually better — only measurement on representative cases can. Asking a model to
-   "optimize" with no eval set yields an opinion, not an optimization.
+   optimization method — meta-prompting loops, the named APO algorithms, DSPy — is a
+   *search guided by a metric*: propose candidates, score them, keep the best. Without
+   an eval set there is no score, so there is nothing to optimize *toward*. The model
+   *can* propose plausible rewrites (it is a good candidate generator), but it *cannot*
+   tell you whether a rewrite is actually better — only measurement on representative
+   cases can. Asking a model to "optimize" with no eval set yields an opinion, not an
+   optimization.
 2. Contrast hand-writing a prompt, a meta-prompting failure-loop, and DSPy in terms of
    *what the human specifies* and *what is searched*. — **Answer:** Hand-writing: the
    human specifies the entire prompt string; nothing is searched — the human *is* the
@@ -1417,16 +1466,177 @@ eval set is what makes any of it real.
    (what the step does) and a metric (what good means); an optimizer searches the space
    of prompt wordings and few-shot demonstrations and compiles the concrete prompt. The
    trend is the human specifying *less of the prompt* and *more of the objective*.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview gave the unifying picture (propose → score → select, eval set mandatory)
+and one-paragraph framings for meta-prompting and DSPy. This section opens three boxes
+the Overview deliberately closed: the named APO methods, DSPy's internal mechanics, and
+the two failure modes any optimization run can hit. It is interview-bait (these
+specifics get asked about on senior applied-AI and ML-engineer interviews), but it is
+**not required** to advance and is not in the topic exam.
+
+**Automatic prompt optimization (APO) — the named methods.** Beyond ad-hoc
+meta-prompting loops, there are systematic search algorithms. **APE (Automatic Prompt
+Engineer)** has a model generate many candidate instructions, scores each on the eval
+set, and keeps the best.[9] **Evolutionary / iterative** methods — *ProTeGi*, *OPRO* —
+treat prompts as a population: generate variants (often by asking an LLM to mutate them
+or to "edit toward higher score"), score them, keep the winners, and use them as
+seeds for the next generation.[9] All of these are walks around the 4-node loop from
+the Overview; what differs is how candidates are proposed and how the search is
+steered (random sampling vs. mutation-of-winners vs. score-conditioned generation).
+
+**DSPy internals — signatures, teleprompters, compilation.** The Overview said DSPy
+lets you declare a signature plus a metric and recompile on a model change. The
+mechanics:
+
+- A **signature** is the typed declaration of a module's input → output (e.g.
+  `question -> answer`, or `context, question -> reasoning, answer`). It states *what*
+  the step does, not *how*.
+- A DSPy **optimizer** — historically called a **teleprompter** in the codebase —
+  searches for the prompt text and few-shot examples that maximize the metric. The most
+  common one, **BootstrapFewShot**, runs the un-optimized program on the training set,
+  keeps the traces where the metric was satisfied, and uses those traces as
+  high-quality few-shot demonstrations for the final compiled prompt. Other optimizers
+  also search instruction wordings.
+- **Compiling** a DSPy program means running the optimizer to derive the concrete
+  prompts for the declared pipeline. When you change models, you re-run compile rather
+  than re-hand-tuning every prompt — the optimization is reproducible and
+  model-specific by construction.
+
+The mental shift DSPy forces: you specify *what* each step should do (the signature)
+and *how good* is defined (the metric), and you let the optimizer decide the exact
+prompt wording.
+
+**The four approaches side by side.** With all the named methods in view, the spectrum
+from hand-writing to DSPy looks like:
+
+| Approach                      | What the human specifies                          | What is searched                                  | Requires                                       |
+|-------------------------------|---------------------------------------------------|----------------------------------------------------|-------------------------------------------------|
+| Hand-writing                  | The entire prompt string                          | Nothing — the human *is* the optimizer             | Only intuition (and ideally an eval set to check)|
+| Meta-prompting (failure-loop) | The task description + a batch of failing cases   | Prompt revisions, proposed by an LLM, judged by the metric | An LLM proposer + an eval set            |
+| Automatic prompt optimization | The task + the metric; candidate-generation config | Instruction wordings (APE, OPRO, evolutionary)    | An eval set + a metric                          |
+| DSPy                          | A typed signature + a metric (not prompt text)    | Prompt wording *and* few-shot demonstrations        | An eval/training split + a metric               |
+
+**Failure modes — overfitting and judge-gaming.** Any search-guided-by-a-metric
+procedure can drive the metric up while making the system worse. Two specific failure
+modes recur:
+
+- **Overfitting the eval set.** The optimizer tunes the prompt to the specific
+  examples in the eval set; the prompt scores high there but does not generalize to
+  held-out data. Same dynamic as overfitting in conventional ML. Safeguard: split your
+  data into train / dev / test, optimize against train+dev, and report the final number
+  on a test split the optimizer *never saw*.
+- **Gaming an LLM judge.** When the metric is "an LLM rates output quality," the
+  optimizer will relentlessly maximize whatever the judge actually rewards. If the
+  judge is biased toward verbose, confident, or agreeable output, the search will find
+  a prompt that produces verbose/confident/agreeable text rather than genuinely better
+  answers. Safeguards: keep some ground-truth-checked or rule-based metric in the
+  loop alongside the LLM judge, vary the judge (different model, different prompt
+  template), and spot-check optimized outputs by hand.
+
+A rising metric is only as trustworthy as the metric itself. Both failure modes are the
+same warning at different scales: the optimizer is doing exactly what you asked, so
+make sure what you asked for matches what you actually want.
+
+### Deep dive — Key terms
+
+- **APE (Automatic Prompt Engineer)** — APO method: LLM generates many candidate
+  instructions, eval-set scores pick the best.
+- **OPRO / ProTeGi / evolutionary APO** — iterative APO methods that treat prompts as
+  a population, mutating and selecting winners over generations.
+- **Automatic prompt optimization (APO)** — systematic candidate-generation-and-scoring
+  search over prompts (APE, OPRO, evolutionary methods).
+- **Teleprompter** — DSPy's historical name for an optimizer module.
+- **BootstrapFewShot** — DSPy optimizer that runs the program on training data, keeps
+  the traces that pass the metric, and uses those as the compiled prompt's few-shot
+  demonstrations.
+- **Compile (a prompt program)** — running a DSPy optimizer to derive concrete prompts
+  for a declared pipeline; re-run on a model change.
+- **Overfitting (prompt-optimization context)** — the optimized prompt scores high on
+  the eval set used during search but does not generalize.
+- **Judge-gaming** — the optimizer finds wording that flatters an LLM judge (verbose,
+  confident, agreeable) without improving the underlying task.
+
+### Deep dive — Common misconceptions
+
+- ❌ APE, OPRO, and DSPy are fundamentally different paradigms. → ✅ They are all walks
+  around the same propose → score → select loop; they differ in *how* candidates are
+  proposed (instruction generation, mutation of winners, signature + bootstrapped
+  few-shot) and what part of the prompt they search over.
+- ❌ DSPy's `BootstrapFewShot` invents synthetic examples. → ✅ It runs the
+  un-optimized program on real training data and keeps the traces that pass the
+  metric; the compiled prompt's few-shot demos come from your data, not fabricated.
+- ❌ An optimized prompt is strictly better. → ✅ It can overfit the eval set or game an
+  LLM judge; hold out a test split and keep some ground-truth evaluation.
+
+### Deep dive — Worked example
+
+Continue the 0.71 → 0.78 meta-prompting result from the Overview with two further
+escalations:
+
+1. **APO — instruction search.** Use APE: have a model generate 40 candidate
+   instructions for the same classification task, score each on the eval set, keep the
+   top one. 0.78 → 0.82. The optimizer here is searching over *instruction wordings*
+   only — same task, same examples, no few-shot demos.
+2. **DSPy — signatures + bootstrapped few-shot.** Express the step as a signature
+   `text -> label`, give it the metric (F1), and split your 300 examples into 200
+   training / 100 test. Run `BootstrapFewShot`: DSPy executes the un-optimized program
+   on the 200 training examples, keeps the traces where the predicted label matched
+   the gold label, and uses those traces as the few-shot demonstrations for the
+   compiled prompt. It also tunes the instruction wording. Final number on the 100-row
+   *held-out* test split: 0.82 → 0.86. When you later switch models, you re-run
+   compile — no hand-tuning.
+
+Now the two failure modes, made concrete on the same task:
+
+- *Overfitting check.* Suppose during DSPy compile you saw training F1 climb to 0.93
+  but held-out test F1 was only 0.86. The 7-point gap is the optimizer fitting
+  idiosyncrasies of the 200 training examples. Without the held-out test split you
+  would have shipped 0.93 as the headline number and been quietly worse in production.
+- *Judge-gaming check.* If the metric had been "an LLM rates output helpfulness" rather
+  than F1, the optimizer might have driven that score from 0.74 to 0.93 by producing
+  verbose, confident, agreeable labels — while the actual classification correctness
+  *fell*. Pairing the LLM judge with a hard correctness check (F1 against true labels)
+  would have caught it.
+
+### Deep dive — Check questions
+
+1. Name the two named-method families behind automatic prompt optimization (one
+   instruction-search, one population-based) and identify which step of the propose →
+   score → select loop each one varies. — **Answer:** Instruction search: **APE** — an
+   LLM generates a batch of candidate instructions and the eval-set metric picks the
+   best; it varies the *proposer* (one-shot LLM generation of many candidates).
+   Population-based: **OPRO / ProTeGi** (evolutionary) — treats prompts as a population,
+   generates variants by mutating or "editing toward higher score," scores them, keeps
+   the winners, and uses them as seeds for the next generation; it varies the
+   *proposer + the loop topology* (re-seeding from winners). Both walk the same 4-node
+   cycle; both require an eval set and metric.
+2. Walk through what happens when you call DSPy's `BootstrapFewShot` optimizer on a
+   signature like `question -> answer` with a training split and a metric. What gets
+   searched, what gets "bootstrapped," and what does it mean to "recompile when the
+   model changes"? — **Answer:** `BootstrapFewShot` runs the un-optimized program on
+   the training examples, evaluates each output against the metric, and keeps the
+   traces (input → reasoning → output) where the metric was satisfied. Those passing
+   traces become the few-shot demonstrations in the compiled prompt — that is the
+   "bootstrap": the demos come from the un-optimized model's own successes on real
+   training data rather than being hand-written. The optimizer also typically tunes
+   instruction wording. "Recompile when the model changes" means: a different model
+   will succeed on a different subset of training examples and respond best to
+   different instruction wording, so you re-run the optimizer to derive a fresh
+   compiled prompt instead of hand-porting the old one.
 3. An optimizer drives an LLM-judged "helpfulness" score from 0.74 to 0.93, but users
-   report the product got worse. Give the two most likely explanations and the safeguard
-   each one calls for. — **Answer:** (a) Overfitting: the search tuned the prompt to the
-   specific eval examples and it doesn't generalize — safeguard: optimize on a training
-   split and report the final number on a held-out test split the optimizer never saw.
-   (b) The optimizer gamed the judge: it found prompt wording that flatters the LLM judge
-   (verbose, confident, agreeable output) rather than genuinely better answers —
-   safeguard: keep ground-truth-checked metrics in the loop, not only an LLM judge, and
-   spot-check optimized outputs by hand. A rising metric is only as trustworthy as the
-   metric itself.
+   report the product got worse. Give the two most likely explanations and the
+   safeguard each one calls for. — **Answer:** (a) Overfitting: the search tuned the
+   prompt to the specific eval examples and it doesn't generalize — safeguard: optimize
+   on a training/dev split and report the final number on a held-out test split the
+   optimizer never saw. (b) The optimizer gamed the judge: it found prompt wording
+   that flatters the LLM judge (verbose, confident, agreeable output) rather than
+   genuinely better answers — safeguard: keep ground-truth-checked metrics in the loop
+   (not only an LLM judge), vary the judge model/template, and spot-check optimized
+   outputs by hand. A rising metric is only as trustworthy as the metric itself.
 
 ---
 
@@ -1687,12 +1897,12 @@ pass.
    **Answer:** False. The opposite: reasoning models already reason internally, so the
    scaffold becomes redundant and can constrain them — you remove it and tune effort
    instead.
-4. It is an established, settled fact that chain-of-thought works *solely* because the
-   reasoning trace acts as a step-by-step scratchpad the model reads back. — **Answer:**
-   False. The mechanism is not fully settled — at least two hypotheses compete (extra
-   serial compute spent across more forward passes, and serial computation via tokens
-   written into the context as a scratchpad), they are hard to disentangle, and both
-   plausibly contribute.
+4. [deep-dive] It is an established, settled fact that chain-of-thought works *solely*
+   because the reasoning trace acts as a step-by-step scratchpad the model reads back. —
+   **Answer:** False. The mechanism is not fully settled — at least two hypotheses
+   compete (extra serial compute spent across more forward passes, and serial
+   computation via tokens written into the context as a scratchpad), they are hard to
+   disentangle, and both plausibly contribute.
 5. Prefilling the assistant turn and structured outputs (`output_config.format`) both
    give an equally hard guarantee that the output matches a required format. —
    **Answer:** False. Prefilling only conditions the *start*; the continuation can still
@@ -1715,11 +1925,11 @@ pass.
    model from the same family without re-running the evals. — **Answer:** False. Prompt
    behavior is model-specific; a model change is effectively a prompt change and must be
    re-evaluated.
-10. Automatic prompt optimization (APE, OPRO, DSPy) removes the need for an eval set,
-   because the optimizer learns on its own what a good prompt is. — **Answer:** False.
-   Every such method is a *search guided by a metric* — propose candidates, score them on
-   an eval set, keep the best. The eval set and metric are the prerequisite; without them
-   there is nothing to optimize toward.
+10. [deep-dive] Automatic prompt optimization (APE, OPRO, DSPy) removes the need for an
+   eval set, because the optimizer learns on its own what a good prompt is. — **Answer:**
+   False. Every such method is a *search guided by a metric* — propose candidates, score
+   them on an eval set, keep the best. The eval set and metric are the prerequisite;
+   without them there is nothing to optimize toward.
 11. Self-consistency improves a hard reasoning task by sampling several independent
    reasoning paths and taking the majority final answer. — **Answer:** True. It runs CoT
    multiple times at non-zero temperature and votes over the final answers; scattered
@@ -1749,9 +1959,10 @@ pass.
    **Answer:** B. Many-shot can supplant a prior (e.g. flipped-label experiments), not
    merely nudge it; it is *more* token-expensive, not cheaper, and its clearest wins are
    on non-reasoning models.
-4. A task asks the model to add a list of numbers, subtract a discount, then apply tax.
-   Zero-shot CoT raises accuracy a lot; the same CoT prompt on "What is the capital of
-   France?" changes accuracy essentially not at all. The reason for that difference is:
+4. [deep-dive] A task asks the model to add a list of numbers, subtract a discount, then
+   apply tax. Zero-shot CoT raises accuracy a lot; the same CoT prompt on "What is the
+   capital of France?" changes accuracy essentially not at all. The reason for that
+   difference is:
    A) CoT only works on math, never on geography  B) CoT helps — whether via extra
    serial compute, via a context scratchpad, or both — only when there are *dependent
    sub-steps* to compute over, which the multi-step task has and the lookup does not
@@ -1796,8 +2007,8 @@ pass.
    examples — **Answer:** B. DSPy's premise is that you specify *what* a step does and
    *how good* is measured; the optimizer compiles the concrete prompt — and you recompile
    on a model change.
-11. The common loop shared by meta-prompting failure-loops, APE, and OPRO is best
-   described as:
+11. [deep-dive] The common loop shared by meta-prompting failure-loops, APE, and OPRO is
+   best described as:
    A) lower the temperature until the metric stops changing  B) propose candidate
    prompts → score them on an eval set → select the best → repeat  C) ask the model once
    for a better prompt and ship it  D) translate the prompt into XML — **Answer:** B. All
@@ -1880,17 +2091,18 @@ pass.
    editing the prompt freely means behavior changes with no controlled review. Only
    pinning both, and re-running evals when either changes, gives a deployment whose
    behavior is attributable and reproducible.
-8. Prompt optimization is described as turning "prompts as code" into "prompts you can
-   also train." Explain what makes a prompt *optimizable* at all, and why an LLM-judged
-   metric needs extra care when used as the optimization objective. — **Model answer:** A
-   prompt becomes optimizable once you have two things: a space of candidate prompts and a
-   *metric over an eval set* — that pair turns prompt-writing into a search problem
-   (propose → score → select → repeat), which meta-prompting loops, APE/OPRO, and DSPy
-   all implement. An LLM-judged metric needs extra care because the optimizer will
-   relentlessly maximize whatever it is given: if the judge can be flattered by verbose,
-   confident, or agreeable output, the search may find a prompt that games the judge
-   rather than genuinely improving the task. Safeguards: hold out a test split to catch
-   overfitting, and keep some ground-truth-checked evaluation alongside the LLM judge.
+8. [deep-dive] Prompt optimization is described as turning "prompts as code" into
+   "prompts you can also train." Explain what makes a prompt *optimizable* at all, and
+   why an LLM-judged metric needs extra care when used as the optimization objective. —
+   **Model answer:** A prompt becomes optimizable once you have two things: a space of
+   candidate prompts and a *metric over an eval set* — that pair turns prompt-writing
+   into a search problem (propose → score → select → repeat), which meta-prompting
+   loops, APE/OPRO, and DSPy all implement. An LLM-judged metric needs extra care
+   because the optimizer will relentlessly maximize whatever it is given: if the judge
+   can be flattered by verbose, confident, or agreeable output, the search may find a
+   prompt that games the judge rather than genuinely improving the task. Safeguards:
+   hold out a test split to catch overfitting, and keep some ground-truth-checked
+   evaluation alongside the LLM judge.
 9. Decomposition/prompt chaining and self-consistency are both reliability techniques but
    answer different questions. State the question each one answers, and describe how they
    *compose*. — **Model answer:** Chaining answers "how do I structure a task too big or
@@ -1939,20 +2151,21 @@ pass.
    eval-driven development as the workflow. Model pinning: a prompt's behavior is
    model-specific, so pin model IDs and re-run evals on any model change. Plus: log
    prompt version in observability, A/B test in production, monitor and roll back.
-4. Explain the spectrum from hand-writing prompts to automatic prompt optimization to
-   DSPy, what each technique searches and what it requires, and the failure modes to
-   guard against. — **Model answer / rubric:** Should cover: hand-writing is bounded by
-   author intuition and does not scale; it is fine for one or two prompts or pre-eval-set
-   exploration. Meta-prompting uses an LLM to critique/rewrite/generate a prompt
-   (model-critiques-prompt, failure-driven loops) — but a rewrite is only a *candidate*,
-   confirmed only by measuring on an eval set. Automatic prompt optimization (APE, OPRO,
-   evolutionary methods) is systematic search: propose candidates → score on eval set →
-   select → repeat. DSPy goes furthest: you declare typed module *signatures* and a
-   *metric*, and an optimizer compiles the prompt wording and few-shot examples;
-   recompile on a model change instead of re-hand-tuning. The hard prerequisite for *all*
-   of it is an eval set and metric — every method is search guided by a metric. Failure
-   modes: overfitting the eval set (hold out a test split) and gaming an LLM judge (keep
-   ground-truth-checked evaluation in the loop).
+4. [deep-dive] Explain the spectrum from hand-writing prompts to automatic prompt
+   optimization to DSPy, what each technique searches and what it requires, and the
+   failure modes to guard against. — **Model answer / rubric:** Should cover:
+   hand-writing is bounded by author intuition and does not scale; it is fine for one
+   or two prompts or pre-eval-set exploration. Meta-prompting uses an LLM to
+   critique/rewrite/generate a prompt (model-critiques-prompt, failure-driven loops) —
+   but a rewrite is only a *candidate*, confirmed only by measuring on an eval set.
+   Automatic prompt optimization (APE, OPRO, evolutionary methods) is systematic search:
+   propose candidates → score on eval set → select → repeat. DSPy goes furthest: you
+   declare typed module *signatures* and a *metric*, and an optimizer compiles the
+   prompt wording and few-shot examples; recompile on a model change instead of
+   re-hand-tuning. The hard prerequisite for *all* of it is an eval set and metric —
+   every method is search guided by a metric. Failure modes: overfitting the eval set
+   (hold out a test split) and gaming an LLM judge (keep ground-truth-checked
+   evaluation in the loop).
 5. A complex task is failing as a single mega-prompt. Lay out how you would apply
    decomposition — covering chaining, fan-out, and routing — and where self-consistency
    fits, including the costs of each choice. — **Model answer / rubric:** Should cover:

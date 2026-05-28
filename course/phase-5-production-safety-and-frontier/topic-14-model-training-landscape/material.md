@@ -141,7 +141,15 @@ post-training in one example.
 
 ## 14.2 — SFT, RLHF, RLAIF, DPO, Constitutional AI
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §14.3. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 Post-training is itself a pipeline of techniques. Know each in one or two sentences and
 know how they relate.
@@ -154,56 +162,52 @@ serviceable instruction-following assistant. Its limit: it can only imitate
 demonstrations, and humans can demonstrate but not easily *rank subtle quality* — it
 struggles to push the model toward "better than the demo."
 
-**RLHF — Reinforcement Learning from Human Feedback.** The classic next step. (1)
-Collect human *preferences*: show annotators two model responses to the same prompt,
-have them pick the better one. (2) Train a **reward model** to predict those human
-preferences — it learns to score any response. (3) Use reinforcement learning (PPO,
-historically) to optimize the SFT model to produce responses the reward model scores
-highly. RLHF lets you optimize for qualities that are easy to *judge* but hard to
-*demonstrate* — and is the technique most responsible for models feeling helpful and
-aligned. Its costs: human preference labeling is slow and expensive, and over-
-optimizing the reward model causes **reward hacking** and is a source of **sycophancy**
-(the reward model rewards agreeable answers).
+**RLHF — Reinforcement Learning from Human Feedback.** The classic next step. In one
+sentence: collect human preferences over pairs of model responses and use them to push
+the policy toward responses humans rate higher. RLHF lets you optimize for qualities
+that are easy to *judge* but hard to *demonstrate* — and is the technique most
+responsible for models feeling helpful and aligned.
 
-**RLAIF — RL from AI Feedback.** Same as RLHF but the *preference labels* come from an
-AI model instead of humans. Much cheaper and faster to scale; quality depends on the
-labeler model. Often combined with human feedback rather than fully replacing it.
+**RLAIF — RL from AI Feedback.** A close cousin of RLHF: same idea, but the preference
+labels come from an AI model instead of humans. Much cheaper and faster to scale.
 
 **DPO — Direct Preference Optimization.** A simpler alternative to RLHF, introduced in
-2023 [2]. It optimizes the policy *directly* on the preference pairs with a
-classification-style loss, **skipping the separate reward model and the RL loop**
-entirely. More stable, simpler to implement, and cheaper — which is why it became very
-popular, especially in the open-weights community. The trade-off: full RLHF with online sampling can still reach
-higher ceilings on some objectives, but DPO captures most of the value with far less
-complexity.
+2023 [2]. It optimizes the policy *directly* on preference pairs, **skipping the
+separate reward model and the RL loop** entirely. More stable, simpler to implement,
+and cheaper — which is why it became very popular, especially in the open-weights
+community.
 
 **Constitutional AI (CAI).** Anthropic's method to reduce reliance on human labels for
 *harmlessness* [1]. Instead of humans labeling harmful outputs, the model critiques and
 revises its own responses against an explicit written set of principles — a
-"constitution." This produces AI-generated preference data for an RLAIF-style stage.
-CAI makes the values explicit and auditable (they are written down) and scales
-harmlessness training without massive human review of disturbing content.
+"constitution." CAI makes the values explicit and auditable (they are written down) and
+scales harmlessness training without massive human review of disturbing content.
 
 The typical modern pipeline: **pretraining → SFT → preference optimization (RLHF /
 RLAIF / DPO, often with a CAI component) → safety/eval passes.**
 
-### Key terms
+**The motivating principle: judging is easier than demonstrating.** Imagine teaching a
+model to write good explanations. With SFT you collect human-written ideal explanations
+and the model imitates them — fine, but capped at the demonstrators' average. With
+RLHF/DPO you instead show raters *two* model explanations and ask "which is clearer?"
+Raters find ranking easy even when writing the ideal is hard, and the preference signal
+pushes the model toward "clearer than either demo." That is the core reason
+post-training uses a preference stage on top of SFT.
+
+### Overview — Key terms
 
 - **SFT** — supervised fine-tuning on (prompt → ideal response) demonstrations;
   imitation learning.
-- **RLHF** — reward model trained on human preference pairs, then RL to maximize that
-  reward; optimizes hard-to-demonstrate but easy-to-judge qualities.
-- **Reward model** — a model that scores responses to approximate human preference.
-- **RLAIF** — RLHF with AI-generated preference labels instead of human ones; cheaper,
-  more scalable.
+- **RLHF** — preference optimization using *human* preference pairs; pushes the model
+  beyond what demonstrators can themselves produce.
+- **RLAIF** — preference optimization using *AI-generated* preference labels instead of
+  human ones; cheaper, more scalable.
 - **DPO** — direct preference optimization; trains on preference pairs directly,
   skipping the reward model and RL loop.
 - **Constitutional AI** — the model critiques/revises its own outputs against a written
   set of principles to generate harmlessness preference data.
-- **Reward hacking** — the policy exploiting flaws in the reward model to score highly
-  without genuinely improving (a source of sycophancy).
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ "RLHF and SFT are alternatives." → ✅ They are sequential stages: SFT first
   (imitate demonstrations), then preference optimization (push beyond them).
@@ -212,11 +216,135 @@ RLAIF / DPO, often with a CAI component) → safety/eval passes.**
 - ❌ "Constitutional AI replaces all human input." → ✅ It reduces reliance on human
   *harm labels* by having the model self-critique against written principles; humans
   still write the constitution and remain involved elsewhere.
+
+### Overview — Worked example
+
+A team has a large budget for human annotators and proposes "skip RLHF/DPO entirely —
+just collect 10× more SFT demonstrations; more imitation data must mean a better model."
+The ceiling problem: SFT is imitation learning, so the model is capped at roughly the
+demonstrators' own quality. More SFT data makes it imitate the average demonstrator
+*more reliably* — it does not push past them. Raters who could not themselves *write* a
+clearer explanation can still *rank* "which of these two is clearer," and that
+preference signal lets RLHF/DPO push the model beyond the demonstrations. More SFT
+cannot buy what a preference stage buys.
+
+### Overview — Check questions
+
+1. A team has a large budget for human annotators and proposes "skip RLHF/DPO entirely
+   — just collect 10× more SFT demonstrations; more imitation data must mean a better
+   model." What is the ceiling problem with this plan? — **Answer:** SFT is imitation
+   learning: the model copies the demonstrations, so it is capped at roughly the
+   *demonstrators' own quality*. More SFT data makes it imitate the average demonstrator
+   more reliably — it does not push past them. The reason a preference stage exists is
+   that humans can *rank* "which of these two is better" for subtle qualities they
+   cannot themselves *demonstrate well*; that preference signal lets RLHF/DPO push the
+   model *beyond* the demonstrations. More SFT cannot buy what preference optimization
+   buys.
+2. Place SFT, preference optimization (RLHF / RLAIF / DPO), and Constitutional AI in
+   their pipeline order from base model to deployed assistant, and say in one sentence
+   what each stage *adds* that the previous one cannot. — **Answer:** Pretraining → SFT
+   → preference optimization (RLHF / RLAIF / DPO, often with a CAI component) →
+   safety/eval. SFT installs instruction-following behavior by imitation but is capped
+   at demonstrator quality. Preference optimization pushes the model *beyond*
+   demonstrations by exploiting that raters can rank what they cannot themselves
+   produce. Constitutional AI further reduces reliance on human harm-labelers by having
+   the model self-critique against written principles, scaling harmlessness training.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview gave each preference-optimization technique in one sentence. This section
+unpacks the actual mechanisms — the reward-model + PPO loop, how RLAIF differs in
+*where the labels come from*, DPO's classification-style loss that lets it skip the
+reward model entirely, the reward-hacking → sycophancy failure mode that comes out of
+training against a proxy, and the constitution → critique → revise → train loop that
+makes CAI work. It is interview-bait and **not required** to advance — it is not in the
+topic exam.
+
+**RLHF — the full loop in detail.** The classic three-step mechanism:
+(1) Collect human *preferences*: show annotators two model responses to the same
+prompt, have them pick the better one. (2) Train a **reward model** to predict those
+human preferences — it learns to score any response. (3) Use reinforcement learning
+(PPO, historically) to optimize the SFT model — the *policy* — to produce responses
+the reward model scores highly. The policy and reward model are two distinct neural
+networks; the policy is what ships, the reward model is the training-time judge. Its
+costs: human preference labeling is slow and expensive, and over-optimizing the reward
+model causes **reward hacking** (see below).
+
+**RLAIF as a distinct technique.** Mechanically identical to RLHF — same reward model,
+same RL loop — but the preference labels feeding the reward model come from another LLM
+instead of human annotators. Cost drops by orders of magnitude; throughput on labeling
+jumps; quality depends on the labeler model and is often combined with human feedback
+rather than fully replacing it. The distinction matters because it changes what the
+reward model is actually learning to predict (AI judgment vs human judgment) — which
+also means the reward-hacking failure mode below applies to RLAIF too, in slightly
+different shape.
+
+**DPO — the classification-style loss.** DPO's mathematical move is to derive a loss
+that, given a preference pair `(prompt, chosen, rejected)`, increases the policy's
+probability of `chosen` and decreases its probability of `rejected` *directly*, with no
+intermediate reward model and no RL sampling. The loss has the structure of a binary
+classification objective on the *ratio* of log-probabilities under the policy vs a
+reference (the SFT model). The practical consequence: training is the same shape as
+SFT — feed a batch of preference pairs, take a gradient step — instead of the
+reward-model-training + PPO-rollout dance. Trade-off: full RLHF with online sampling
+can still reach somewhat higher ceilings on some objectives (it keeps generating fresh
+samples for the reward model to score, expanding the data distribution), but DPO
+captures most of the value with far less complexity.
+
+**Reward hacking → sycophancy.** Both RLHF and RLAIF train the policy against a
+*learned* reward model that is only a *proxy* for what humans (or AI labelers) actually
+want. Optimize hard enough against any proxy and the policy starts exploiting the
+*difference* between the proxy and the real objective. Concretely: raters tend to rate
+agreeable, confident, well-presented answers more highly than equally-correct hesitant
+ones; the reward model picks that up and scores agreeable answers higher; the policy
+learns to be agreeable. That is **sycophancy** — the model agreeing with the user even
+when the user is wrong — and it is a textbook reward-hacking artifact, not a bug to
+patch but a structural consequence of optimizing a proxy reward.
+
+**Constitutional AI — constitution → critique → revise → train.** The full loop:
+(1) Humans write a **constitution** — an explicit set of principles the model should
+follow (e.g. avoid harmful content, decline manipulative requests). (2) The model is
+prompted to **critique** its own response to a harmful-seeming prompt against those
+principles. (3) The model **revises** the response to comply with the principles.
+(4) The (original, revised) pair becomes preference data for an RLAIF-style stage that
+trains the model to prefer the revised behavior. Net effect: AI-generated preference
+data for *harmlessness* without humans having to label disturbing outputs — and the
+values stay auditable because the constitution is written down.
+
+### Deep dive — Key terms
+
+- **Reward model** — a separate neural network trained to predict human (RLHF) or AI
+  (RLAIF) preference scores for responses; the policy is then optimized against it.
+- **PPO (Proximal Policy Optimization)** — the RL algorithm historically used in RLHF
+  to update the policy against the reward model.
+- **Policy** — in RLHF/RLAIF, the language model being trained (the thing that ships);
+  distinct from the reward model.
+- **Reward hacking** — the policy exploiting flaws in the (proxy) reward model to score
+  highly without genuinely improving on the real objective.
+- **Sycophancy** — the trained-model failure mode where it agrees with the user even
+  when the user is wrong; a downstream consequence of the reward model rewarding
+  agreeable answers.
+- **Constitution (in CAI)** — the written set of principles the model self-critiques
+  against to generate harmlessness preference data.
+
+### Deep dive — Common misconceptions
+
 - ❌ "RLHF makes models perfectly honest." → ✅ It can induce sycophancy and reward
   hacking — the reward model rewards what *looks* good to raters, not always what is
   true.
+- ❌ "DPO and RLHF differ only in implementation; the math is the same." → ✅ DPO's loss
+  is a classification-style objective directly on preference pairs (no reward model, no
+  RL sampling); RLHF trains a separate reward model and runs a PPO-style RL loop. The
+  pipelines are structurally different.
+- ❌ "Constitutional AI just means giving the model a long system prompt." → ✅ CAI is a
+  *training* procedure: the model critiques and revises its own responses against the
+  constitution to generate preference data, which then trains the weights via an
+  RLAIF-style stage. The constitution shapes the *training data*, not just the
+  inference-time prompt.
 
-### Worked example
+### Deep dive — Worked example
 
 RLHF is a cycle through a reward model and an RL loop; DPO takes a shortcut that
 optimizes the policy straight from the preference pairs, skipping that whole middle:
@@ -241,27 +369,18 @@ optimizes the policy straight from the preference pairs, skipping that whole mid
               DPO bypasses the reward-model + RL middle entirely
 ```
 
-Why preference optimization beats SFT alone: imagine teaching a model to write good
-explanations. With SFT you collect human-written ideal explanations and the model
-imitates them — fine, but capped at the demonstrators' average. With RLHF/DPO you
-instead show raters *two* model explanations and ask "which is clearer?" Raters find
-ranking easy even when writing the ideal is hard, and the preference signal pushes the
-model toward "clearer than either demo." That is the core reason post-training uses a
-preference stage on top of SFT: judging quality is easier than demonstrating it.
+Trace the sycophancy failure on this diagram. The human-picks step is where the proxy
+enters: raters consistently prefer confident, agreeable answers. The reward model
+faithfully fits that preference — including the "agreeable" component. PPO then pushes
+the policy to score high on the reward model, so it learns to be agreeable even when
+agreement is wrong. Nothing in the loop is broken; the reward model is doing its job and
+PPO is doing its job. The flaw is structural: the policy is optimized against a *proxy*
+for human preference, and any gap between proxy and truth is exactly what hard
+optimization finds and exploits.
 
-### Check questions
+### Deep dive — Check questions
 
-1. A team has a large budget for human annotators and proposes "skip RLHF/DPO entirely
-   — just collect 10× more SFT demonstrations; more imitation data must mean a better
-   model." What is the ceiling problem with this plan? — **Answer:** SFT is imitation
-   learning: the model copies the demonstrations, so it is capped at roughly the
-   *demonstrators' own quality*. More SFT data makes it imitate the average demonstrator
-   more reliably — it does not push past them. The reason a preference stage exists is
-   that humans can *rank* "which of these two is better" for subtle qualities they
-   cannot themselves *demonstrate well*; that preference signal lets RLHF/DPO push the
-   model *beyond* the demonstrations. More SFT cannot buy what preference optimization
-   buys.
-2. Two teams both do preference optimization. Team A trains a separate reward model and
+1. Two teams both do preference optimization. Team A trains a separate reward model and
    runs a PPO-style RL loop; Team B optimizes the policy directly on the preference
    pairs. Name which is RLHF and which is DPO, and give one advantage of each
    direction of the trade-off. — **Answer:** Team A is classic RLHF; Team B is DPO. DPO
@@ -270,6 +389,30 @@ preference stage on top of SFT: judging quality is easier than demonstrating it.
    advantage). Full online RLHF (A) is more complex but, because it samples and scores
    responses online, can still reach a somewhat higher ceiling on some objectives (its
    advantage). DPO captures most of the value for far less complexity.
+2. RLHF makes models feel helpful and aligned, but it is also blamed for *sycophancy*.
+   Explain how the *same* mechanism produces both the benefit and the flaw, and why
+   "just train it not to be sycophantic" misses the structural cause. — **Answer:** RLHF
+   optimizes the policy against a *reward model* that was trained to predict what human
+   raters prefer. Raters genuinely prefer helpful, well-presented answers — so the
+   policy learns to be helpful (the benefit). Raters also tend to prefer agreeable,
+   confident answers, so the reward model rewards agreement; the policy then
+   over-optimizes the reward model — scoring well on what *looks* good to raters rather
+   than on what is true (reward hacking). Sycophancy is exactly that. "Just train it not
+   to be sycophantic" misses the structural cause: the policy is optimized against a
+   *proxy* for human preference, and any gap between the proxy and truth is what hard
+   optimization finds. You have to fix the reward signal (better raters, better
+   labels, CAI-style principles), not just penalize one symptom.
+3. Walk through Constitutional AI's constitution → critique → revise → train loop, and
+   say what specifically it changes about the *data pipeline* for harmlessness training
+   compared to vanilla RLHF. — **Answer:** Humans write a constitution — an explicit
+   set of principles. For a harmful-seeming prompt, the model critiques its own
+   response against those principles, then revises the response to comply. The
+   (original, revised) pair becomes preference data for an RLAIF-style stage that
+   trains the policy to prefer the revised behavior. What changes vs. vanilla RLHF for
+   harmlessness: the preference labels no longer require humans to read and label
+   disturbing outputs at scale — the model self-generates the preference data against
+   the written constitution. The values stay auditable because the constitution is
+   written down, and labeling throughput stops being the bottleneck.
 
 ---
 
@@ -881,37 +1024,31 @@ and why most big open models (DeepSeek, Qwen, Mixtral, Llama's MoE variants) are
 
 ## 14.8 — Context-length extension — RoPE scaling
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to the Exam
+> Question Bank. The deep dive is interview-bait and worth doing eventually, but it
+> is not required to advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 A model's context window is not an arbitrary setting — it is bounded by how the model
-was *trained*, specifically by its **positional encoding**. Transformers process all
-tokens in parallel and have no inherent sense of order, so position must be injected.
-Modern LLMs use **RoPE (Rotary Position Embedding)**: instead of adding a position
-vector, RoPE *rotates* the query and key vectors by an angle proportional to the token's
-position. The dot product in attention then naturally encodes *relative* distance
-between tokens — elegant, and a big part of why it became standard.
+was *trained*, specifically by its **positional encoding** (the mechanism that injects
+token order, since transformers process tokens in parallel and have no inherent sense
+of order). A model trained on sequences up to, say, 8k tokens has only ever seen
+positions in that range. Feed it a 32k-token sequence and tokens far out land at
+positions **far outside the training distribution** — positions the model has never
+encountered. Attention degrades badly: the model effectively does not know how to
+interpret those positions.
 
-The problem: a model trained with RoPE on sequences up to, say, 8k tokens has only ever
-seen rotation angles in the range those 8k positions produce. Feed it a 32k-token
-sequence and tokens far out get rotation angles **far outside the training
-distribution** — positions the model has never encountered. Attention degrades badly:
-the model effectively does not know how to interpret those positions. This is why you
-cannot simply pass a longer prompt and expect a longer effective context — extending
-context requires *deliberately* adapting the positional encoding.
-
-**RoPE scaling** is the family of techniques that does this:
-
-- **Position Interpolation (PI).** Instead of *extrapolating* to unseen large positions,
-  *interpolate*: linearly scale position indices down so a 32k sequence's positions map
-  into the 0–8k range the model already understands (positions become fractional). The
-  model sees only familiar angles. Requires a short fine-tune to adapt, and works well.
-- **NTK-aware scaling / YaRN.** More refined schemes. Rather than scaling all RoPE
-  frequencies uniformly (which crowds out the high-frequency components that encode
-  fine-grained local position), they scale different frequency bands differently —
-  preserving local precision while extending global range. **YaRN** (2023) is a widely
-  used, efficient method that reaches large context extensions with far less
-  fine-tuning than earlier approaches — the paper reports ~10× fewer tokens and ~2.5×
-  fewer training steps than prior methods [6].
+This is why you cannot simply pass a longer prompt and expect a longer effective
+context — extending context requires *deliberately* adapting the positional encoding.
+The family of techniques that does this is called **RoPE scaling** (named after RoPE,
+the positional encoding used in modern LLMs; mechanism is in the deep dive). Applying
+RoPE scaling also requires a short **long-context fine-tune** to adapt the model to its
+new effective range.
 
 Key applied points:
 - Long-context support is a *training/architecture* achievement, not a free switch.
@@ -924,20 +1061,17 @@ Key applied points:
 - Extending context usually costs some quality on short sequences and needs a fine-tune
   — it is a trade-off, not a pure win.
 
-### Key terms
+### Overview — Key terms
 
 - **Positional encoding** — how token order is injected into a transformer, which
   otherwise sees tokens as an unordered set.
-- **RoPE (Rotary Position Embedding)** — encodes position by rotating query/key vectors;
-  attention then captures relative distance. The modern standard.
-- **Extrapolation problem** — RoPE fails on positions beyond those seen in training
-  because the rotation angles are out of distribution.
-- **Position Interpolation (PI)** — scaling position indices down so long sequences map
-  into the trained range.
-- **NTK-aware scaling / YaRN** — refined RoPE-scaling methods that scale frequency bands
-  non-uniformly to extend range while preserving local precision.
+- **RoPE scaling** — the family of techniques (mechanism in the deep dive) used to
+  extend a model's context window beyond its trained range; requires a short
+  long-context fine-tune.
+- **Effective context** — how far across the window the model maintains quality, often
+  less than the advertised hard limit.
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ "You can use any context length by just sending more tokens." → ✅ Beyond the
   trained range, positional encodings are out of distribution and quality collapses;
@@ -947,11 +1081,107 @@ Key applied points:
 - ❌ "A 1M-token context window means uniform quality across 1M tokens." → ✅ Extension
   widens the window; effective context still degrades (lost-in-the-middle, context rot)
   before the hard limit.
+
+### Overview — Worked example
+
+A team has an 8k-context open model and needs 32k. Naively feeding a 32k prompt produces
+garbled, incoherent output past ~8k — positions beyond 8k are out of the trained
+distribution and the model has no learned way to interpret them. They apply a RoPE
+scaling method and do a short long-context fine-tune on 32k-token documents. The model
+now handles 32k coherently. But evals also show a small dip on short-prompt tasks and
+that retrieval accuracy still sags for facts buried in the middle of a 32k context —
+extension widened the window, but effective context is still imperfect.
+
+### Overview — Check questions
+
+1. A team takes an 8k-context model, sends it a 32k-token prompt, and the output is
+   coherent for the first part and then degrades into nonsense. They suspect a memory
+   bug. Why is "memory bug" the wrong diagnosis, and what is the actual category of
+   the problem? — **Answer:** It is not a memory bug — it is a *positional-encoding*
+   problem. A model's context window is bounded by what its positional encoding was
+   trained on; an 8k-trained model has only seen positions in the 0–8k range, so tokens
+   beyond 8k land at positions outside the trained distribution and attention degrades
+   there. The coherent-then-garbled pattern is exactly the
+   in-distribution-then-out-of-distribution boundary. The fix is RoPE scaling plus a
+   long-context fine-tune, not a memory tweak.
+2. A model is advertised at a 1M-token context window. A team plans to dump a million
+   tokens of company docs into every prompt and assume uniform recall across the
+   window. What two assumptions are wrong, and what should they expect instead? —
+   **Answer:** First, the 1M window is a *trained/extended* capability — it was bought
+   by RoPE scaling and long-context fine-tuning, not handed for free, and the extension
+   itself usually costs some quality on shorter prompts (a trade-off). Second, a hard
+   window of 1M does *not* mean uniform quality across 1M — effective context still
+   degrades (lost-in-the-middle, context rot) well before the hard limit, so facts
+   buried mid-context may not be retrieved reliably. Expect: a working long window, but
+   measurably worse recall in the middle of it, and some short-prompt regression
+   relative to the un-extended model.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview told you context length is bounded by the positional encoding and that
+RoPE scaling extends it. This section unpacks the *mechanism*: how RoPE encodes
+position, why naive extension fails geometrically, and how Position Interpolation and
+the NTK-aware / YaRN family of methods get around it. It is interview-bait and **not
+required** to advance — it is not in the topic exam.
+
+**RoPE — the mechanism.** Modern LLMs use **RoPE (Rotary Position Embedding)**: instead
+of adding a position vector to the embedding, RoPE *rotates* the query and key vectors
+by an angle proportional to the token's position. The dot product in attention then
+naturally encodes *relative* distance between tokens — elegant, and a big part of why
+it became standard. The angles applied at different vector components come from a set
+of frequencies (high-frequency components rotate fast with position, encoding
+fine-grained local order; low-frequency components rotate slowly, encoding coarse
+global order).
+
+**Why naive extension fails — the extrapolation problem.** A model trained with RoPE
+on sequences up to 8k tokens has only ever seen rotation angles in the range those 8k
+positions produce. Feed it a 32k-token sequence and tokens past 8k get rotation angles
+*far outside the training distribution* — angles the model has never encountered.
+Attention degrades badly: the model effectively does not know how to interpret those
+positions.
+
+**Position Interpolation (PI).** Instead of *extrapolating* to unseen large positions,
+*interpolate*: linearly scale position indices down so a 32k sequence's positions map
+into the 0–8k range the model already understands (positions become fractional). The
+model sees only familiar angles. Requires a short fine-tune to adapt, and works well.
+The counterintuitive bit: to *grow* the context window you scale positions *down*, not
+up. The reason is that the danger is *out-of-distribution rotation angles*, not "big"
+positions per se — scaling down maps long sequences into the trained band, scaling up
+would push them past it.
+
+**NTK-aware scaling / YaRN.** More refined schemes. Rather than scaling all RoPE
+frequencies uniformly (which crowds out the high-frequency components that encode
+fine-grained local position), they scale different frequency bands *differently* —
+preserving local precision while extending global range. **YaRN** (2023) is a widely
+used, efficient method that reaches large context extensions with far less fine-tuning
+than earlier approaches — the paper reports ~10× fewer tokens and ~2.5× fewer training
+steps than prior methods [6].
+
+### Deep dive — Key terms
+
+- **RoPE (Rotary Position Embedding)** — encodes position by rotating query/key vectors
+  by an angle proportional to position; attention then captures relative distance. The
+  modern standard.
+- **Extrapolation problem** — RoPE fails on positions beyond those seen in training
+  because the rotation angles are out of distribution.
+- **Position Interpolation (PI)** — scaling position indices down so long sequences map
+  into the trained range.
+- **NTK-aware scaling / YaRN** — refined RoPE-scaling methods that scale frequency
+  bands non-uniformly to extend range while preserving local precision.
+
+### Deep dive — Common misconceptions
+
 - ❌ "Position interpolation extrapolates to bigger positions." → ✅ It does the
   opposite — it *interpolates*, mapping large positions down into the already-trained
   range so the model sees only familiar angles.
+- ❌ "YaRN just scales all RoPE frequencies by the same factor." → ✅ NTK-aware /
+  YaRN-style methods scale *different frequency bands* by different amounts on purpose,
+  preserving high-frequency local precision while stretching the low-frequency global
+  range.
 
-### Worked example
+### Deep dive — Worked example
 
 On a position number line, naive long context *extrapolates* past the trained band into
 positions the model has never seen; position interpolation *compresses* the long
@@ -976,28 +1206,16 @@ sequence back inside the trained band:
       → every position lands on a familiar (fractional) angle
 ```
 
-A team has an 8k-context open model and needs 32k. Naively feeding a 32k prompt
-produces garbled, incoherent output past ~8k — RoPE positions beyond 8k are out of
-distribution. They apply YaRN: RoPE frequencies are rescaled non-uniformly so 32k
-positions map into a range the model can interpret, then they do a short long-context
-fine-tune on 32k-token documents. The model now handles 32k coherently. But evals also
-show a small dip on short-prompt tasks and that retrieval accuracy still sags for facts
-buried in the middle of a 32k context — extension widened the window, but effective
-context is still imperfect.
+Same team as the Overview, but now in mechanism detail. Their 8k-context open model is
+extended to 32k with **YaRN**: RoPE frequencies are rescaled non-uniformly so 32k
+positions map into a range the model can interpret — high-frequency components are kept
+sharp so local order is still resolved, low-frequency components are stretched to cover
+the longer range. A short long-context fine-tune on 32k-token documents adapts the
+model to its new effective range, and 32k handling becomes coherent.
 
-### Check questions
+### Deep dive — Check questions
 
-1. A team takes an 8k-context model, sends it a 32k-token prompt, and the output is
-   coherent for the first part and then degrades into nonsense. They suspect a memory
-   bug. Using how RoPE encodes position, give the real explanation. — **Answer:** It is
-   not a memory bug — it is a positional-encoding problem. RoPE encodes a token's
-   position by rotating its query/key vectors by an angle proportional to that position.
-   A model trained to 8k has only ever *seen* rotation angles from the 0–8k range. Token
-   positions beyond 8k produce angles far *outside* the trained distribution — positions
-   the model has no learned way to interpret — so attention degrades there and the
-   output becomes incoherent. The coherent-then-garbled pattern is exactly the
-   in-distribution-then-out-of-distribution boundary.
-2. Position Interpolation extends context by scaling 32k-token position indices *down*
+1. Position Interpolation extends context by scaling 32k-token position indices *down*
    into an 8k-trained model's range (positions become fractional). A student asks: "if
    we want a *bigger* context, why does the method scale positions *down* rather than
    up?" Answer them. — **Answer:** Because the model fails on *unseen* angles, not on
@@ -1006,7 +1224,23 @@ context is still imperfect.
    understands*, so every token still produces a familiar, in-distribution angle (just
    at finer, fractional spacing). Scaling *up* would extrapolate to never-seen angles —
    exactly the failure. It is called *interpolation* because the model only ever sees
-   angles inside its trained range; that is why it works where naive extension does not.
+   angles inside its trained range; that is why it works where naive extension does
+   not.
+2. A team applies Position Interpolation to extend their model from 8k to 32k and finds
+   that long-range retrieval works but the model has lost some of its sensitivity to
+   fine-grained local word order on short sequences. Using how RoPE encodes position,
+   explain what PI traded away — and what NTK-aware / YaRN-style methods change to
+   recover it. — **Answer:** RoPE encodes position via a *spectrum* of rotation
+   frequencies — high-frequency components turn quickly with position and carry
+   fine-grained local order; low-frequency components turn slowly and carry coarse
+   global structure. Position Interpolation scales *all* frequencies uniformly down,
+   which compresses the high-frequency components together and effectively blurs local
+   distinctions — that is the lost short-range sensitivity. NTK-aware / YaRN methods
+   scale frequency bands *non-uniformly*: high-frequency components are largely
+   preserved (so local precision survives) while only the low-frequency components are
+   stretched to extend the global range. That is why YaRN reaches large context
+   extensions with much less fine-tuning and less short-sequence regression than plain
+   PI.
 
 ---
 
@@ -1021,7 +1255,7 @@ context is still imperfect.
 2. Fine-tuning is the reliable way to teach a model new facts. — **Answer:** False.
    Knowledge lives at pretraining scale; fine-tuning is far too small to install facts
    reliably and they go stale — use RAG.
-3. DPO trains a separate reward model and runs a reinforcement-learning loop. —
+3. [deep-dive] DPO trains a separate reward model and runs a reinforcement-learning loop. —
    **Answer:** False. DPO's whole point is to skip the reward model and the RL loop,
    optimizing directly on preference pairs.
 4. LoRA freezes the base model and trains small low-rank adapter matrices. — **Answer:**
@@ -1098,7 +1332,7 @@ context is still imperfect.
    Output tokens D) Cached tokens — **Answer:** C. They are output tokens — the
    expensive rate — which is why reasoning calls can cost far more than the visible
    answer.
-8. Why does an 8k-trained model break when fed 32k tokens directly? A) The vocabulary
+8. [deep-dive] Why does an 8k-trained model break when fed 32k tokens directly? A) The vocabulary
    is too small B) RoPE positions beyond 8k are out of the trained distribution C) It
    runs out of memory D) Temperature is too high — **Answer:** B. Out-of-distribution
    rotation angles degrade attention.
@@ -1123,7 +1357,7 @@ context is still imperfect.
    it likewise cannot install the post-cutoff knowledge reliably — the facts would be
    sparse, unreliable, and stale. Fresh knowledge must come from RAG (retrieved into
    context at request time), not from training.
-2. RLHF makes models feel helpful and aligned, but it is also blamed for *sycophancy*
+2. [deep-dive] RLHF makes models feel helpful and aligned, but it is also blamed for *sycophancy*
    (the model agreeing with the user even when the user is wrong). Explain how the
    *same* mechanism produces both the benefit and the flaw. — **Model answer:** RLHF
    optimizes the model against a *reward model* that was trained to predict what human
@@ -1189,7 +1423,7 @@ context is still imperfect.
 
 ### Long Answer
 
-1. Walk through the full pipeline that turns a pretrained base model into a deployed
+1. [deep-dive] Walk through the full pipeline that turns a pretrained base model into a deployed
    chat assistant. — **Model answer / rubric:** Start with the base model from
    pretraining — capable but not an assistant. SFT: supervised fine-tuning on (prompt →
    ideal response) demonstrations to install instruction-following behavior. Preference
@@ -1258,7 +1492,7 @@ context is still imperfect.
    student, then quantize it. Also continuous batching / better serving stack and model
    cascading. Distillation changes which model runs; quantization changes how the same
    model is stored — pick based on whether you can tolerate a different model.
-3. Your team built an open-source model into a product and now needs 4× the context
+3. [deep-dive] Your team built an open-source model into a product and now needs 4× the context
    length it was trained for. The naive fix — sending longer prompts — produces garbage.
    Explain why and what to do. — **Model answer / rubric:** The model's RoPE positional
    encoding only ever saw rotation angles from its trained position range; positions

@@ -128,7 +128,15 @@ parental leave do I get, and is it paid?"*
 
 ## 10.2 — Embeddings — dense vectors, semantic similarity, cosine similarity
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §10.3. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 An **embedding** is a fixed-length list of numbers — a **dense vector** — that
 represents the *meaning* of a piece of text. An embedding model maps text to a point in a
@@ -144,42 +152,6 @@ real number and captures *semantic content* — so "car," "automobile," and "veh
 to nearby vectors even though they share no characters. This is what lets RAG match a
 query to a passage that answers it in completely different words.
 
-**How embedding models are trained — the contrastive / dual-encoder objective.**
-Embeddings are *learned*, and how they are learned explains most of their practical
-quirks. The dominant recipe is **contrastive learning** with a **dual-encoder** (also
-called a **two-tower**) setup: you take a large set of *positive pairs* — texts that
-*should* be close, e.g., a question and a passage that answers it, a query and a clicked
-document, a sentence and its paraphrase — and you train the model so that, for each
-anchor, its true positive is scored more similar than a batch of *negatives* (unrelated
-texts). The training signal is a softmax-style **contrastive (InfoNCE) loss**: it
-maximizes the similarity of the positive pair while minimizing similarity to the
-negatives. Geometrically, every training step **pulls a related pair together and pushes
-unrelated pairs apart**, and after millions of such updates the space is organized so
-that closeness = semantic relatedness.
-
-Three consequences of this objective matter directly to a RAG engineer:
-
-- **It explains the query/document asymmetry.** The positive pairs in retrieval training
-  are typically *short query ↔ long document* — two different shapes of text serving
-  different roles. The model is optimized to place a query near its answering passage,
-  *not* near other queries. This is why a "dual-encoder": the two towers can even be
-  separate (a query encoder and a document encoder), and why query/document task
-  prefixes (10.x below) exist — the model learned a directional query→document
-  relationship, not a symmetric "are these the same text" relationship.
-- **Negatives — especially hard negatives — are what make it sharp.** A model trained
-  only against obviously-unrelated negatives learns coarse distinctions. Good embedding
-  models are trained with **hard negatives**: passages that look superficially relevant
-  but are wrong answers. Hard negatives force the model to learn fine-grained
-  distinctions, which is exactly what separates a usable retriever from a vague one.
-- **It explains the domain-fit problem.** The model only learns the relationships present
-  in its *training pairs*. A model trained on general web Q&A has never seen what
-  "relevant" means for legal citations, medical coding, or your internal product jargon —
-  so its space organizes those poorly. This is why a general embedding model can
-  underperform on a specialized corpus, and why **fine-tuning the embedding model on
-  in-domain pairs** (your own query→document examples) can materially lift recall: you
-  are giving the contrastive objective the relationships that actually matter for *your*
-  retrieval task.
-
 **Measuring similarity.** Given two vectors you need a number for "how alike." The
 standard choice is **cosine similarity**: the cosine of the angle between the two
 vectors. It ranges from −1 (opposite) through 0 (unrelated/orthogonal) to 1 (identical
@@ -190,40 +162,43 @@ for those, cosine similarity, dot product, and (negative) Euclidean distance all
 results identically, so the choice is mostly about convention and performance.
 
 **Practical realities an engineer must know:**
-- **Asymmetry.** A short query and a long passage are different "shapes" of text. Many
-  embedding models support **task instructions / prefixes** ("represent this query for
-  retrieval...") or separate query/document encoders to handle this; use them.
 - **Model consistency.** The query and the documents *must be embedded by the same
   model*. Vectors from different models live in incompatible spaces and cannot be
   compared. Re-indexing the whole corpus is required to switch embedding models.
+- **Query/document asymmetry.** A short query and a long passage are different "shapes"
+  of text, and embedding models treat them asymmetrically — they are optimized to place a
+  query near its *answering passage*, not near other queries. Many embedding models
+  support **task instructions / prefixes** ("represent this query for retrieval...") or
+  separate query/document encoders to handle this; use them. (*Why* the asymmetry exists
+  is in the deep dive — it falls out of how embedding models are trained.)
 - **Dimension trade-off.** Higher dimensions can capture more nuance but cost more
   storage and compute; some models (Matryoshka-style — including `text-embedding-3`) let
   you truncate to a smaller dimension via a `dimensions` parameter with graceful quality
   loss. [2]
 - **Domain fit.** A general embedding model may be weak on specialized jargon (legal,
   medical, code); domain-specific or fine-tuned embeddings can materially improve recall.
+  (*Why* a general model underperforms on a specialized corpus is also a deep-dive
+  consequence of the training objective.)
 
-### Key terms
+### Overview — Key terms
 
 - **Embedding** — a dense numeric vector representing the meaning of text.
 - **Dense vector** — a vector with all dimensions populated, capturing semantic content.
 - **Sparse vector** — a mostly-zero vector with one dimension per word (e.g., TF-IDF), capturing exact terms.
 - **Embedding model** — a model trained to map text to a semantic vector space.
-- **Contrastive learning** — training that pulls positive (related) text pairs together and pushes negatives apart, using a contrastive (InfoNCE) loss.
-- **Dual-encoder / two-tower** — the architecture for embedding-based retrieval: query and document are encoded independently (possibly by separate towers) and compared by vector similarity.
-- **Hard negative** — a superficially-relevant but wrong text used as a training negative to force fine-grained distinctions.
 - **Cosine similarity** — cosine of the angle between two vectors; measures directional/semantic closeness, ignores magnitude.
 - **Normalization** — scaling a vector to unit length, after which cosine and dot product rank identically.
 - **Embedding dimension** — the length of the vector (e.g., 768, 1536, 3072).
+- **Query/document asymmetry** — the fact that embedding models treat short queries and long documents as different roles; handled with task prefixes or separate encoders.
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ "Cosine similarity measures word overlap." → ✅ It measures the angle between learned semantic vectors; two texts with no shared words can have high cosine similarity if they mean the same thing.
 - ❌ "You can mix embeddings from different models." → ✅ Different models produce vectors in incompatible spaces; query and corpus must be embedded by the same model, and switching models requires full re-indexing.
 - ❌ "More embedding dimensions are always better." → ✅ Higher dimensions cost more storage/compute and have diminishing returns; the right size depends on the task and budget.
-- ❌ "A general embedding model is equally good on any corpus." → ✅ Contrastive training only teaches the model the relationships in its training pairs; on specialized domains (legal, medical, your jargon) a general model can underperform, and fine-tuning on in-domain query→document pairs can materially lift recall.
+- ❌ "A general embedding model is equally good on any corpus." → ✅ On specialized domains (legal, medical, your jargon) a general model can underperform; fine-tuning on in-domain query→document pairs can materially lift recall.
 
-### Worked example
+### Overview — Worked example
 
 Query: *"How do I reset my password?"*
 
@@ -253,13 +228,117 @@ and each passage vector — small angle = high cosine = close meaning:
 A keyword search would have ranked the policy passage above the actual answer (more
 literal "password" matches). The embedding ranks by meaning and surfaces the right one.
 
-### Check questions
+### Overview — Check questions
 
-1. The query "How do I cancel my subscription?" and the passage "To end your membership, visit Account → Billing and select Close plan." share almost no words. A keyword search ranks this passage low; a dense-embedding search ranks it high. Explain what property of embeddings produces this difference. — **Answer:** Embeddings are dense semantic vectors learned (often contrastively) so that texts with similar *meaning* land near each other regardless of shared words. "Cancel subscription" and "end membership / close plan" are semantically close, so their vectors are close and cosine similarity is high. Keyword/sparse search keys on exact terms, so with no overlapping words it scores the passage low. Dense search matches meaning, not surface form.
+1. The query "How do I cancel my subscription?" and the passage "To end your membership, visit Account → Billing and select Close plan." share almost no words. A keyword search ranks this passage low; a dense-embedding search ranks it high. Explain what property of embeddings produces this difference. — **Answer:** Embeddings are dense semantic vectors learned so that texts with similar *meaning* land near each other regardless of shared words. "Cancel subscription" and "end membership / close plan" are semantically close, so their vectors are close and cosine similarity is high. Keyword/sparse search keys on exact terms, so with no overlapping words it scores the passage low. Dense search matches meaning, not surface form.
 2. A team embeds short queries and long documents with the same general model and gets mediocre retrieval. Two embeddings can have high cosine similarity yet one is a 5-word query and the other a 500-word passage — why does cosine not penalize this length gap, and what practical step addresses the query/document mismatch? — **Answer:** Cosine similarity measures the *angle* (direction) between vectors, not their magnitude, so it is not skewed by text length — a short query and long passage can point the same direction. But query and document are still different "shapes" of text; the practical fix is to use the model's task instructions/prefixes (e.g., "represent this query for retrieval...") or separate query/document encoders, which the model provides precisely to handle this asymmetry.
 3. A team switches from embedding model A to a newer model B but, to save time, only re-embeds *new* documents — old documents keep their model-A vectors. Retrieval quality collapses. Explain precisely why. — **Answer:** Each embedding model defines its own vector space; model-A and model-B vectors have no shared coordinate meaning, so cosine distances *between* them are meaningless. With a query embedded by B compared against a corpus that is half A-vectors and half B-vectors, similarity scores are only valid for the B half — the A documents are effectively unrankable noise. Switching models requires re-embedding the *entire* corpus, not just new additions.
-4. A general-purpose embedding model gives strong retrieval on everyday queries but mediocre retrieval on a corpus of patent filings full of specialized legal-technical language. Using how embedding models are trained, explain why, and what would most directly fix it. — **Answer:** Embedding models are trained by contrastive learning on positive *pairs* — they only learn the notion of "related" present in their training data. A general model's pairs come from everyday web text, so it never learned what "relevant" means for patent-style language, and its vector space organizes that jargon poorly. The most direct fix is to fine-tune the embedding model on in-domain pairs (real query→patent-passage examples, ideally with hard negatives), giving the contrastive objective the domain relationships that matter — which materially lifts recall on the specialized corpus.
-5. Embedding-based retrieval is called a "dual-encoder" and is described as asymmetric, optimized to place a short query near its answering passage rather than near other queries. Tie this directly back to the training objective. — **Answer:** The contrastive objective is trained on *positive pairs*, and for retrieval those pairs are short query ↔ long answering document — two different roles. The model is optimized to pull a *query toward its answering passage*, not to pull queries toward each other, so the learned relationship is directional (query→document), not a symmetric same-text similarity. "Dual-encoder" captures that the two roles can even use separate encoder towers, and it is why query/document task prefixes exist — to tell the model which role a given text is playing.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview took it on faith that an embedding model "places similar meanings near each
+other," that there is a query/document asymmetry, and that a general model can underperform
+on a specialized corpus. This section explains *why* — and the explanation is one mechanism:
+how embedding models are trained. The three practical quirks above are all consequences of
+that one objective. This is interview-bait — embedding-model training and the
+dual-encoder/contrastive recipe come up in senior interviews — but it is **not required**
+to advance and is not in the topic exam.
+
+**The contrastive / dual-encoder objective.** Embeddings are *learned*, and how they are
+learned explains the practical behavior you saw in the Overview. The dominant recipe is
+**contrastive learning** with a **dual-encoder** (also called a **two-tower**) setup: you
+take a large set of *positive pairs* — texts that *should* be close, e.g., a question and
+a passage that answers it, a query and a clicked document, a sentence and its paraphrase
+— and you train the model so that, for each anchor, its true positive is scored more
+similar than a batch of *negatives* (unrelated texts). The training signal is a
+softmax-style **contrastive (InfoNCE) loss**: it maximizes the similarity of the positive
+pair while minimizing similarity to the negatives. Geometrically, every training step
+**pulls a related pair together and pushes unrelated pairs apart**, and after millions of
+such updates the space is organized so that closeness = semantic relatedness.
+
+**Why "dual-encoder."** The two roles in a positive pair (query and document) can be encoded
+by *separate* encoders (a query tower and a document tower) and compared by vector
+similarity. Even when the two towers share weights, the architecture treats query and
+document as distinct inputs by design, and similarity is computed *independently per side*
+— which is exactly what makes the architecture scalable (document vectors can be precomputed
+once and reused, see §10.6 for the contrast with cross-encoders).
+
+Three consequences of this objective matter directly to a RAG engineer:
+
+- **It explains the query/document asymmetry.** The positive pairs in retrieval training
+  are typically *short query ↔ long document* — two different shapes of text serving
+  different roles. The model is optimized to place a query near its answering passage,
+  *not* near other queries. The learned relationship is directional (query→document), not
+  a symmetric "are these the same text" relationship — which is why query/document task
+  prefixes exist (to tell the model which role a given text is playing) and why some
+  models use separate encoder towers.
+- **Negatives — especially hard negatives — are what make it sharp.** A model trained
+  only against obviously-unrelated negatives learns coarse distinctions. Good embedding
+  models are trained with **hard negatives**: passages that look superficially relevant
+  but are wrong answers. Hard negatives force the contrastive loss to learn fine-grained
+  distinctions, which is exactly what separates a usable retriever from a vague one.
+- **It explains the domain-fit problem.** The model only learns the relationships present
+  in its *training pairs*. A model trained on general web Q&A has never seen what
+  "relevant" means for legal citations, medical coding, or your internal product jargon —
+  so its space organizes those poorly. This is why a general embedding model can
+  underperform on a specialized corpus, and why **fine-tuning the embedding model on
+  in-domain pairs** (your own query→document examples, ideally with hard negatives) can
+  materially lift recall: you are giving the contrastive objective the relationships that
+  actually matter for *your* retrieval task.
+
+### Deep dive — Key terms
+
+- **Contrastive learning** — training that pulls positive (related) text pairs together and pushes negatives apart, using a contrastive loss.
+- **InfoNCE loss** — the softmax-style contrastive loss used in modern embedding training; maximizes the score of the positive pair while pushing down a batch of negatives.
+- **Positive pair** — two texts that should be close (e.g., query ↔ answering passage); the supervision signal.
+- **Negative / hard negative** — an unrelated (or *superficially relevant but wrong*) text used as the contrast; hard negatives force fine-grained distinctions.
+- **Dual-encoder / two-tower** — the architecture for embedding-based retrieval: query and document are encoded independently (possibly by separate towers) and compared by vector similarity.
+
+### Deep dive — Common misconceptions
+
+- ❌ "Embeddings just learn 'meaning' from text — the training is a black box." → ✅ The
+  objective is specific: contrastive learning on positive/negative *pairs*. Every behavior
+  you see (asymmetry, hard-negative sensitivity, domain-fit failures) is a direct
+  consequence of that objective.
+- ❌ "Hard negatives are an optimization detail." → ✅ They are load-bearing — easy
+  negatives only teach coarse distinctions; a model without hard negatives is a vague
+  retriever.
+- ❌ "Fine-tuning the embedding model just teaches it new vocabulary." → ✅ It teaches it
+  the *relationships* (which queries should be close to which documents) that the
+  general-pair training never saw — that is what lifts recall on a specialized corpus.
+
+### Deep dive — Worked example
+
+Take the patent-filing scenario from the Overview's domain-fit point. With the contrastive
+objective in view, trace *why* a general embedding model fails and *what* fine-tuning
+actually changes:
+
+1. The general model was trained on positive pairs from general web Q&A: "how do I
+   reset my password?" ↔ "to change your account credentials, go to Settings..." and
+   millions like it. The InfoNCE loss pulled those pairs together and pushed unrelated
+   web text apart.
+2. The model therefore knows what "related" looks like *for general web text*. It has
+   no positive pair that says "patent query about claim construction" ↔ "patent passage
+   citing 35 U.S.C. § 112." It never saw that relationship.
+3. At inference on patent filings, the model places patent passages in whatever region of
+   the space its general-text geometry happens to put them — there is no learned signal
+   organizing patent semantics, so the geometry is approximately random for the
+   patent-specific distinctions that matter.
+4. Fine-tuning supplies new positive pairs (`patent query` ↔ `passage that answers it`)
+   and ideally hard negatives (passages that *look* like the right answer but aren't).
+   The contrastive loss reorganizes the space so patent queries land near their answering
+   passages, exactly as the original pretraining did for general text.
+
+The asymmetry behavior follows the same logic: every training pair is `query ↔ document`,
+so the learned closeness is directional, not symmetric — the model never had a "two queries
+mean the same thing" signal to learn.
+
+### Deep dive — Check questions
+
+1. A general-purpose embedding model gives strong retrieval on everyday queries but mediocre retrieval on a corpus of patent filings full of specialized legal-technical language. Using how embedding models are trained, explain why, and what would most directly fix it. — **Answer:** Embedding models are trained by contrastive learning on positive *pairs* — they only learn the notion of "related" present in their training data. A general model's pairs come from everyday web text, so it never learned what "relevant" means for patent-style language, and its vector space organizes that jargon poorly. The most direct fix is to fine-tune the embedding model on in-domain pairs (real query→patent-passage examples, ideally with hard negatives), giving the contrastive objective the domain relationships that matter — which materially lifts recall on the specialized corpus.
+2. Embedding-based retrieval is called a "dual-encoder" and is described as asymmetric, optimized to place a short query near its answering passage rather than near other queries. Tie this directly back to the training objective. — **Answer:** The contrastive objective is trained on *positive pairs*, and for retrieval those pairs are short query ↔ long answering document — two different roles. The model is optimized to pull a *query toward its answering passage*, not to pull queries toward each other, so the learned relationship is directional (query→document), not a symmetric same-text similarity. "Dual-encoder" captures that the two roles can even use separate encoder towers, and it is why query/document task prefixes exist — to tell the model which role a given text is playing.
 
 ---
 
@@ -367,7 +446,15 @@ A retrieval eval over 80 doc questions confirms recall@5 rose from 0.61 → 0.92
 
 ## 10.4 — Vector databases and ANN search (HNSW, IVF)
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §10.5. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 After indexing you have millions of chunk embeddings. At query time you embed the query
 and must find the most similar vectors. The naive approach — **exact k-nearest-neighbor
@@ -378,23 +465,92 @@ Nearest Neighbor (ANN) search**: trade a small, controllable amount of accuracy
 built to store embeddings and serve ANN search, plus metadata filtering, CRUD, and
 operational concerns (persistence, scaling, backups).
 
-ANN works by building an **index** — a data structure that lets a query reach the likely
-nearest neighbors without scanning everything. Two index families dominate:
+**Two index families dominate.** You should be able to pick between them by their
+trade-off shape; the internal mechanisms are in the deep dive.
 
-**HNSW (Hierarchical Navigable Small World)** — a *graph-based* index, the default in
-most modern vector DBs. It builds a multi-layer graph: sparse long-range links at the
-top layers for fast coarse jumps, dense short-range links at the bottom for precision. A
-search greedily walks the graph from the top down toward the query. Properties:
-excellent recall/speed trade-off, roughly **logarithmic** query-time scaling, supports
-incremental inserts. [3] Costs: **high memory** (the graph plus vectors live in RAM) and
-slower build times. Key tuning knobs: `M` (links per node — higher = better recall, more
-memory), `efConstruction` (build-time search effort), `efSearch` (query-time search
-effort — higher = better recall, slower). The single most useful knob to know is
-**`efSearch`: it lets you trade recall against latency at query time without
-rebuilding**.
+- **HNSW (Hierarchical Navigable Small World)** — a *graph-based* index, the default in
+  most modern vector DBs. Properties: **excellent recall/speed**, supports incremental
+  inserts. Cost: **high memory** (the graph plus vectors live in RAM). [3]
+- **IVF (Inverted File Index)** — a *cluster-based* index. Properties: **lower memory**
+  than HNSW, fast builds. Cost: **some recall loss** at cluster boundaries; less friendly
+  to heavy incremental updates.
 
-A search enters at the sparse top layer, takes long coarse hops toward the query, then
-descends layer by layer into progressively denser links for the final precise hop:
+**Query-time recall dials.** Both families expose a knob that trades recall against
+latency *at query time, without rebuilding the index* — HNSW's is **`efSearch`**, IVF's
+is **`nprobe`**. Higher = more search effort per query = higher recall, higher latency.
+This is the single most operationally useful fact: if recall is slightly low and you
+can't afford a rebuild, raise the query-time knob.
+
+**The recall/latency/cost/memory triangle** is the heart of operating a vector DB. You
+cannot maximize all of: recall, query speed, low memory, fast inserts. HNSW favors
+recall and speed at memory cost; IVF favors memory at some recall cost. Compression
+techniques (deep dive) buy more memory for some recall. Pick by your constraints and
+**measure recall against an exact-search baseline** on your own data.
+
+**Naming the landscape (2026).** **pgvector** — the Postgres extension; production-grade
+at significant scale, keeps vectors next to your relational data and access control,
+supports HNSW and IVFFlat; the pragmatic default if you already run Postgres.
+**Pinecone** — fully-managed, serverless, scales without manual index tuning. **Qdrant**,
+**Weaviate**, **Milvus** — feature-rich dedicated vector DBs (Weaviate is noted for
+strong native hybrid search; Milvus for very large scale). **Chroma** — lightweight,
+developer-friendly, good for prototyping. **FAISS** — Meta's ANN *library* (not a full
+DB) — the building block many systems embed. Choose based on scale, whether you want
+managed vs. self-hosted, and whether you need vectors co-located with existing data.
+
+### Overview — Key terms
+
+- **Approximate Nearest Neighbor (ANN)** — search that trades a small, tunable amount of recall for large speed gains over exact kNN.
+- **Recall** — fraction of the true nearest neighbors that the approximate search actually returns.
+- **Vector database** — a system for storing embeddings and serving ANN search with metadata filtering and CRUD.
+- **HNSW** — a graph-based ANN index family; default in most vector DBs; excellent recall/speed at high memory cost.
+- **IVF** — a cluster-based ANN index family; lower memory than HNSW with some recall loss at cluster boundaries.
+- **efSearch / nprobe** — query-time knobs trading recall against latency (HNSW / IVF respectively); the on-the-fly recall dial.
+- **Recall/latency/cost/memory trade-off** — the four-way trade you cannot all maximize; index choice picks which to favor.
+
+### Overview — Common misconceptions
+
+- ❌ "Vector DBs find the exact nearest neighbors." → ✅ They use ANN — approximate search that trades a tunable amount of recall for speed; exact search doesn't scale.
+- ❌ "HNSW is strictly best." → ✅ HNSW gives excellent recall/speed but is memory-hungry; IVF trades recall for far lower memory. The right choice depends on the recall/latency/cost/memory constraints.
+- ❌ "You can't change recall without rebuilding the index." → ✅ Query-time knobs (`efSearch` for HNSW, `nprobe` for IVF) trade recall vs. latency on the fly without rebuilding.
+
+### Overview — Worked example
+
+A corpus of 20M chunk embeddings (1024-dim). Exact kNN: ~20M dot products per query →
+hundreds of ms, far too slow.
+
+- **HNSW (`efSearch=64`):** recall ≈ 0.95 vs. exact, query ≈ 5 ms. But the index needs
+  ~100+ GB RAM. Raising `efSearch` to 128 lifts recall to ≈ 0.98 at ≈ 9 ms — the
+  query-time recall/latency dial in action.
+- **IVF (`nprobe=32`, with compression):** memory drops to a fraction of HNSW's, query
+  ≈ 8 ms, recall ≈ 0.90. Raising `nprobe` to 128 lifts recall toward 0.96 at higher
+  latency.
+- **Decision:** if RAM budget is tight, IVF; if recall is paramount and RAM is
+  available, HNSW. Either way, recall is measured against an exact-search sample of 500
+  queries so the trade-off is a known number, not a guess.
+
+### Overview — Check questions
+
+1. A prototype RAG system with 5,000 chunks uses exact (brute-force) nearest-neighbor search and is perfectly fast. The team scales to 30 million chunks and latency becomes unacceptable. Explain why exact search broke at scale and what specifically ANN gives up to fix it. — **Answer:** Exact kNN compares the query against *every* stored vector — O(N) per query — so going from 5k to 30M vectors multiplies per-query work ~6,000×. ANN builds an index that reaches the likely nearest neighbors without scanning everything, restoring speed; what it gives up is a small, *tunable* amount of recall — it may miss some true neighbors. Exact search is fine at prototype scale and breaks precisely because cost grows linearly with corpus size.
+2. Two teams must choose an ANN index. Team A runs on memory-constrained hardware and rarely updates the corpus; Team B needs the best possible recall, has ample RAM, and inserts new documents continuously. Recommend HNSW or IVF for each and justify with the specific trade-off. — **Answer:** Team A → IVF: it is a cluster-based index with lower memory than HNSW and fast builds, and the recall loss at cluster boundaries is acceptable when RAM is the binding constraint and updates are rare (IVF is less update-friendly). Team B → HNSW: a graph-based index with excellent recall/speed and good support for incremental inserts, at the cost of high memory — which Team B can afford. Match the index to the binding constraint.
+3. Recall on your HNSW-backed system is slightly too low for a launch, but a full index rebuild would take hours you don't have. What can you change, why does it work without a rebuild, and what does it cost? — **Answer:** Raise `efSearch`, the *query-time* search-effort knob. It works without a rebuild because it controls how hard each query searches the existing graph at run time (not how the graph is built). Higher `efSearch` explores more of the graph, raising recall; the cost is increased per-query latency. It is the on-the-fly recall/latency dial.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview said "HNSW is a graph-based index" and "IVF is a cluster-based index" and
+asked you to take those properties on faith. This section unpacks the mechanisms — what
+the graph actually *is*, what the clusters actually *are*, what the build-time knobs do,
+and how compression layers on top. It is interview-bait — ANN internals show up in
+infra/retrieval interviews — but it is **not required** to advance and is not in the
+topic exam.
+
+**HNSW — the layered-graph descent.** HNSW builds a *multi-layer* navigable graph. The
+bottom layer (Layer 0) contains *every* vector with **short-range** links to its near
+neighbors — dense and precise. Each higher layer is a sparse subset of the layer below
+with **longer-range** links — fewer nodes, bigger hops. A search enters at the sparse
+top layer, takes long coarse hops toward the query, then descends layer by layer into
+progressively denser links for the final precise hop:
 
 ```
               query
@@ -414,71 +570,128 @@ descends layer by layer into progressively denser links for the final precise ho
 ```
 
 (The dashed line traces the query descending layer to layer to its nearest neighbor.)
+The hierarchy is why HNSW achieves roughly **logarithmic** query-time scaling: the long
+hops at the top cover the search space fast, then each descent narrows the region. And
+because the graph supports insertion (find where a new vector should go and wire up its
+links), it supports incremental updates.
 
-**IVF (Inverted File Index)** — a *cluster-based* index. At build time it clusters all
-vectors into `nlist` partitions (centroids, via k-means). At query time it searches only
-the `nprobe` partitions whose centroids are nearest the query, skipping the rest.
-Properties: lower memory than HNSW, fast builds; `nprobe` trades recall vs. speed.
-Weakness: a true neighbor sitting just across a partition boundary can be missed; needs
-training data to set centroids; less friendly to heavy incremental updates.
+**HNSW's tuning knobs.** Three knobs matter:
 
-**Quantization** is usually layered on top to cut memory: **Product Quantization (PQ)**
-compresses each vector into a compact code (e.g., `IVF-PQ`); **scalar quantization**
-stores dimensions as int8 instead of float32 (~4× smaller). **DiskANN** keeps the index
-on SSD for very large corpora that don't fit in RAM. All trade some recall for cost.
+- **`M`** — the maximum number of links per node. Higher `M` makes the graph denser →
+  better recall, slower build, more memory. Build-time only.
+- **`efConstruction`** — the search-effort used *during build* to decide each new node's
+  neighbors. Higher = better-quality graph at the cost of build time. Build-time only.
+- **`efSearch`** — the search-effort used *per query* to explore the graph. Higher =
+  better recall, higher per-query latency. **Query-time** — this is the on-the-fly recall
+  dial from the Overview, and the reason it works without a rebuild is that it changes
+  how hard each query searches the existing graph, not how the graph is built.
 
-**The recall/latency/cost/memory triangle** is the heart of operating a vector DB. You
-cannot maximize all of: recall, query speed, low memory, fast inserts. HNSW favors
-recall and speed at memory cost; IVF favors memory at some recall cost; quantization
-buys memory for some recall. Pick by your constraints and **measure recall against an
-exact-search baseline** on your own data.
+**IVF — k-means partitioning and nprobe pruning.** IVF works completely differently. At
+build time it runs **k-means** clustering on the corpus, producing `nlist` centroids
+(typical: thousands), and each vector is assigned to the partition of its nearest
+centroid. At query time the engine computes the query's distance to all `nlist`
+centroids — cheap — picks the `nprobe` partitions whose centroids are nearest the query,
+and only searches *those* partitions, skipping the rest. If `nlist=4096` and `nprobe=32`,
+the search touches roughly `32/4096 ≈ 0.8%` of the corpus, which is the speedup.
 
-**Naming the landscape (2026).** **pgvector** — the Postgres extension; production-grade
-at significant scale, keeps vectors next to your relational data and access control,
-supports HNSW and IVFFlat; the pragmatic default if you already run Postgres.
-**Pinecone** — fully-managed, serverless, scales without manual index tuning. **Qdrant**,
-**Weaviate**, **Milvus** — feature-rich dedicated vector DBs (Weaviate is noted for
-strong native hybrid search; Milvus for very large scale). **Chroma** — lightweight,
-developer-friendly, good for prototyping. **FAISS** — Meta's ANN *library* (not a full
-DB) — the building block many systems embed. Choose based on scale, whether you want
-managed vs. self-hosted, and whether you need vectors co-located with existing data.
+The **boundary failure mode** falls directly out of this: a true nearest neighbor sitting
+just *across* a partition boundary may live in a partition the engine didn't probe, so
+it is silently missed. Raising `nprobe` searches more partitions and recovers more such
+neighbors, at proportionally more work. That is why `nprobe` is the query-time recall
+dial for IVF. (And why IVF needs training data — k-means must see a representative sample
+to choose centroids — and is less friendly to heavy incremental updates: the partitions
+were sized for the corpus you trained on.)
 
-### Key terms
+**Quantization — compressing the vectors themselves.** Quantization layers on top of
+either index family to cut *memory* at a small recall cost:
 
-- **Approximate Nearest Neighbor (ANN)** — search that trades a small, tunable amount of recall for large speed gains over exact kNN.
-- **Recall** — fraction of the true nearest neighbors that the approximate search actually returns.
-- **Vector database** — a system for storing embeddings and serving ANN search with metadata filtering and CRUD.
-- **HNSW** — a graph-based ANN index; default in most vector DBs; great recall/speed, high memory.
-- **IVF** — a cluster-based ANN index; searches only the nearest partitions; lower memory, some recall loss at boundaries.
-- **efSearch / nprobe** — query-time knobs trading recall against latency (HNSW / IVF respectively).
-- **Quantization (PQ / scalar)** — compressing vectors to cut memory at a small recall cost.
+- **Scalar quantization** — store each dimension as `int8` (1 byte) instead of `float32`
+  (4 bytes) → ~4× smaller, near-imperceptible recall hit. The cheap default.
+- **Product Quantization (PQ)** — split each vector into `m` sub-vectors, k-means each
+  sub-space into a small codebook (e.g., 256 entries → 1 byte per sub-vector), and store
+  each vector as a sequence of `m` byte-codes. A 1024-dim float32 vector (4096 bytes)
+  becomes, say, 64 bytes — ~64× smaller. Distance is computed by looking up sub-distances
+  in precomputed tables. The recall hit is bigger than scalar quantization's but the
+  memory saving is dramatic, which is why `IVF-PQ` is the canonical big-corpus
+  low-memory combination.
 
-### Common misconceptions
+**DiskANN** — for corpora that won't fit in RAM at all, DiskANN keeps the index on SSD,
+arranging the graph so a query reads only a small number of disk pages per search. Higher
+per-query latency than in-memory HNSW, but it lets you serve corpora orders of magnitude
+larger on the same hardware.
 
-- ❌ "Vector DBs find the exact nearest neighbors." → ✅ They use ANN — approximate search that trades a tunable amount of recall for speed; exact search doesn't scale.
-- ❌ "HNSW is strictly best." → ✅ HNSW gives excellent recall/speed but is memory-hungry; IVF and quantization trade recall for far lower memory. The right choice depends on the recall/latency/cost/memory constraints.
-- ❌ "You can't change recall without rebuilding the index." → ✅ Query-time knobs (`efSearch` for HNSW, `nprobe` for IVF) trade recall vs. latency on the fly without rebuilding.
+All compression and disk-residency tricks trade some recall (or some latency) for cost
+or memory — the trade-off triangle, again.
 
-### Worked example
+### Deep dive — Key terms
 
-A corpus of 20M chunk embeddings (1024-dim). Exact kNN: ~20M dot products per query →
-hundreds of ms, far too slow.
+- **Layered/hierarchical graph (HNSW)** — multi-layer graph with sparse long-range links
+  at the top and dense short-range links at the bottom; gives logarithmic query-time
+  scaling.
+- **`M` / `efConstruction`** — HNSW's build-time knobs (links per node / build-time search
+  effort); changing them requires rebuilding.
+- **k-means partitioning (IVF)** — clusters the corpus into `nlist` centroids at build
+  time; each vector belongs to one partition.
+- **`nlist` / `nprobe`** — IVF's partition count (build-time) and per-query probe count
+  (query-time, the recall dial).
+- **Partition-boundary miss** — IVF's specific recall failure: a true neighbor in an
+  unprobed partition is silently missed.
+- **Scalar quantization** — store dims as int8 instead of float32; ~4× memory cut, tiny
+  recall hit.
+- **Product Quantization (PQ)** — split a vector into sub-vectors, replace each with a
+  small codebook index; large memory cut at some recall cost; the canonical big-corpus
+  compression combined with IVF as `IVF-PQ`.
+- **DiskANN** — disk-resident ANN index for corpora too large for RAM.
 
-- **HNSW (`M=16`, `efSearch=64`):** recall ≈ 0.95 vs. exact, query ≈ 5 ms. But the
-  index needs ~100+ GB RAM. Raising `efSearch` to 128 lifts recall to ≈ 0.98 at ≈ 9 ms —
-  the query-time recall/latency dial.
-- **IVF-PQ (`nlist=4096`, `nprobe=32`, PQ compression):** memory drops to a fraction of
-  HNSW's, query ≈ 8 ms, recall ≈ 0.90. Raising `nprobe` to 128 lifts recall toward 0.96
-  at higher latency.
-- **Decision:** if RAM budget is tight, IVF-PQ; if recall is paramount and RAM is
-  available, HNSW. Either way, recall is measured against an exact-search sample of 500
-  queries so the trade-off is a known number, not a guess.
+### Deep dive — Common misconceptions
 
-### Check questions
+- ❌ "HNSW's `efSearch` and `M` are interchangeable knobs." → ✅ `efSearch` is *query-time*
+  (no rebuild) and `M` / `efConstruction` are *build-time* (require rebuild); the
+  Overview's "raise efSearch without rebuild" advice depends on this distinction.
+- ❌ "Product Quantization loses a little memory, like scalar." → ✅ PQ buys *dramatically*
+  more memory savings than scalar quantization (often 10–60×) at a meaningfully larger
+  recall hit; it is the right tool when memory is the binding constraint, not when a
+  trivial recall hit matters.
+- ❌ "DiskANN is just a slower HNSW." → ✅ DiskANN's distinctive feature is fitting
+  *bigger-than-RAM* corpora on the same hardware by reading a small number of SSD pages
+  per query; it is about scale, not speed.
 
-1. A prototype RAG system with 5,000 chunks uses exact (brute-force) nearest-neighbor search and is perfectly fast. The team scales to 30 million chunks and latency becomes unacceptable. Explain why exact search broke at scale and what specifically ANN gives up to fix it. — **Answer:** Exact kNN compares the query against *every* stored vector — O(N) per query — so going from 5k to 30M vectors multiplies per-query work ~6,000×. ANN builds an index that reaches the likely nearest neighbors without scanning everything, restoring speed; what it gives up is a small, *tunable* amount of recall — it may miss some true neighbors. Exact search is fine at prototype scale and breaks precisely because cost grows linearly with corpus size.
-2. Two teams must choose an ANN index. Team A runs on memory-constrained hardware and rarely updates the corpus; Team B needs the best possible recall, has ample RAM, and inserts new documents continuously. Recommend HNSW or IVF for each and justify with the specific trade-off. — **Answer:** Team A → IVF: it is a cluster-based index with lower memory than HNSW and fast builds, and the recall loss at partition boundaries is acceptable when RAM is the binding constraint and updates are rare (IVF is less update-friendly). Team B → HNSW: a graph-based index with excellent recall/speed and good support for incremental inserts, at the cost of high memory — which Team B can afford. Match the index to the binding constraint.
-3. Recall on your HNSW-backed system is slightly too low for a launch, but a full index rebuild would take hours you don't have. What can you change, why does it work without a rebuild, and what does it cost? — **Answer:** Raise `efSearch`, the *query-time* search-effort knob. It works without a rebuild because it controls how hard each query searches the existing graph (not how the graph is built — `M` and `efConstruction` are build-time). Higher `efSearch` explores more of the graph, raising recall; the cost is increased per-query latency. It is the on-the-fly recall/latency dial.
+### Deep dive — Worked example
+
+Trace a single query through each index family with the mechanisms in view.
+
+*HNSW.* Corpus is 20M vectors, `M=16`, `efSearch=64`. The query embedding arrives:
+1. Enter at the top layer (a few hundred nodes, very long links). Greedily follow the
+   neighbor whose vector is closest to the query, hopping across the space in 2–3 long
+   steps.
+2. Descend to Layer 1: shorter links, denser graph. A handful of medium-range hops
+   refine the position.
+3. Descend to Layer 0 (the full graph). `efSearch=64` says "maintain a dynamic candidate
+   list of size 64 and keep expanding the most promising unvisited neighbors until the
+   list stabilizes." Return the top-k from that list.
+
+Total work scales like O(log N) in the corpus size — the long top-layer links are what
+make that true. Raising `efSearch` to 128 simply enlarges that dynamic candidate list at
+Layer 0, exploring more of the graph and recovering more true neighbors at higher cost.
+
+*IVF-PQ.* Same corpus, `nlist=4096`, `nprobe=32`, PQ codes of 64 bytes per vector.
+1. Compute the query's distance to each of the 4096 centroids (cheap — 4096 dot products).
+2. Sort and pick the 32 nearest centroids; their partitions hold ~`32/4096 ≈ 0.8%` of the
+   corpus, roughly 160k vectors.
+3. Within those 32 partitions, compute query-to-vector distances *using the PQ codebook
+   tables* (no float32 vectors to load — just byte-code lookups into precomputed
+   sub-distance tables). Take the top-k.
+
+The boundary miss is now concrete: if a true neighbor sat in the 33rd-closest partition,
+it's invisible to this query. Raising `nprobe` to 128 makes the engine search 128
+partitions instead of 32, recovering most of those missed neighbors at 4× the per-query
+work.
+
+### Deep dive — Check questions
+
+1. Explain *why* HNSW achieves roughly logarithmic query-time scaling — what specifically in the index structure provides that property? — **Answer:** HNSW builds a hierarchy of layers: the top layers are sparse subsets of the corpus with long-range links; the bottom layer holds every vector with short-range links. A search starts at the top, where a few long hops cover huge regions of the space; each descent moves to a denser layer with shorter links, narrowing the region. The combination of long top-layer links covering the whole space in O(log N) hops plus dense bottom-layer refinement gives the ~logarithmic query-time scaling. Without the hierarchy you'd have just a flat dense graph, and search cost would degrade.
+2. IVF can silently miss a true nearest neighbor even with a well-tuned index, in a way HNSW typically does not. Explain the mechanism — what specifically about IVF causes this failure mode — and how `nprobe` mitigates it. — **Answer:** IVF partitions the corpus by k-means into `nlist` clusters and at query time only searches the `nprobe` partitions whose centroids are nearest the query. If a true nearest neighbor sits just *across* a partition boundary — its centroid is the (`nprobe`+1)-th closest, not in the probed set — the engine never compares against it, so it is silently missed regardless of how close it actually is to the query. Raising `nprobe` searches more partitions and recovers boundary-crossing neighbors, at proportionally more work per query. HNSW's graph descent doesn't have analogous hard partitions, so it isn't subject to this specific failure mode.
+3. A team is serving a 500M-vector corpus on memory-constrained hardware. Plain HNSW won't fit. Describe what `IVF-PQ` does — both the IVF part and the PQ part — and explain which trade-off (recall, latency, memory) each is buying and at what cost. — **Answer:** **IVF** clusters the corpus into `nlist` centroids via k-means and at query time only searches the `nprobe` partitions nearest the query; this trades a small recall loss (true neighbors across partition boundaries can be missed) for searching only a small fraction of the corpus — buying *latency / cost* at the cost of some *recall*. **PQ (Product Quantization)** replaces each vector with a sequence of small codebook indices (each sub-vector replaced by 1 byte pointing into a 256-entry codebook), shrinking a vector from kilobytes to tens of bytes; distance is computed via precomputed sub-distance tables. PQ buys *memory* (often 10–60× cut) at the cost of a meaningfully larger recall hit than scalar quantization. Combined as `IVF-PQ`, the two work together: IVF prunes which partitions to search, and within those partitions PQ makes the stored vectors tiny — so a 500M-vector corpus that wouldn't fit as float32 in any reasonable RAM budget becomes serveable. The cost is somewhat lower recall vs. plain HNSW, recovered partially by raising `nprobe`.
 
 ---
 
@@ -1102,7 +1315,7 @@ mark 85.
 3. If retrieval precision is poor, increasing chunk size is a reliable fix because each chunk then carries more context. — **Answer:** False. Larger chunks mix multiple topics, so the embedding becomes a blurry average that matches no query sharply — often *worsening* precision — and pad the context with distracting text. Chunk size is a trade-off, not a one-way dial.
 4. A vector database returning the "top 10 nearest" chunks is guaranteed to return the 10 truly closest vectors in the corpus. — **Answer:** False. Vector DBs use Approximate Nearest Neighbor search, which trades a tunable amount of recall for speed; it can miss some true neighbors. Exact nearest-neighbor search doesn't scale to large corpora.
 5. BM25 will reliably retrieve a paraphrased query even when the query and the answer passage share no vocabulary. — **Answer:** False. BM25 is a lexical ranking function with no notion of meaning; with no shared terms it scores the passage near zero. Matching paraphrases is the job of dense embedding search — this is why the two are combined in hybrid search.
-9. An embedding model trained contrastively on general web Q&A pairs will be equally accurate at retrieval on any specialized corpus, such as legal filings. — **Answer:** False. Contrastive training only teaches the model the "related" relationships present in its training pairs; it never learned what relevance means for specialized domains, so its vector space organizes that jargon poorly. Fine-tuning on in-domain query→document pairs is what lifts recall on a specialized corpus.
+9. [deep-dive] An embedding model trained contrastively on general web Q&A pairs will be equally accurate at retrieval on any specialized corpus, such as legal filings. — **Answer:** False. Contrastive training only teaches the model the "related" relationships present in its training pairs; it never learned what relevance means for specialized domains, so its vector space organizes that jargon poorly. Fine-tuning on in-domain query→document pairs is what lifts recall on a specialized corpus.
 6. Because a cross-encoder is more accurate than a bi-encoder, you should precompute cross-encoder document representations at index time for fast retrieval. — **Answer:** False. A cross-encoder produces no reusable per-document representation — it scores a specific query-document *pair* jointly, so the score depends on the query and cannot be precomputed. It must run at query time over a small candidate set.
 7. A well-designed RAG system should always return an answer, since returning "I don't know" looks like a failure to users. — **Answer:** False. When retrieval finds nothing relevant, the correct behavior is abstention; forcing an answer from weak or empty context produces a confident hallucination, which is worse than an honest "I don't have that information."
 8. For a knowledge base of 200,000 articles that is updated several times a day, fine-tuning the model on the articles is the recommended approach. — **Answer:** False. Fine-tuning injects facts unreliably and freezes them at training time, so a frequently-updated corpus goes stale immediately and gives no citations. RAG keeps such bulk dynamic knowledge current, auditable, and citable.
@@ -1152,14 +1365,14 @@ mark 85.
 5. Name three distinct RAG failure modes and classify each as retrieval or generation, and for one of them explain how you would *confirm* it from logs. — **Model answer:** Retrieval: retrieval miss (answer chunk never fetched), distracting/low-precision context, index drift/stale sources. Generation: ignoring the context (answering from memory), hallucination despite context, lost-in-the-middle. Confirmation example — for "ignoring the context": log the retrieved chunks; if the correct chunk is present yet the answer contradicts it, the failure is generation, not retrieval. Credit for three correct classifications plus one log-based diagnostic.
 6. A stakeholder objects that abstention ("I don't have that information") makes the bot look unhelpful and wants it removed. Give the argument for keeping abstention. — **Model answer:** Without abstention, when retrieval genuinely finds nothing relevant the model is forced to generate from weak or empty context — it produces a confident, fluent, *wrong* answer. In domains like support, legal, medical, or finance a confidently wrong answer is far more damaging than an honest "I don't have that information," which the user can act on (rephrase, escalate). Abstention trades the appearance of helpfulness for actual trustworthiness.
 7. State the core distinction that drives the RAG vs. fine-tuning choice, and give one example task for each that the *other* tool would handle badly. — **Model answer:** RAG supplies *knowledge* into the context; fine-tuning changes *behavior* (style, format, skill). RAG-but-not-fine-tuning example: answering from a large, frequently-updated help center — fine-tuning would inject facts unreliably and freeze them. Fine-tuning-but-not-RAG example: enforcing a consistent terse house style or output format — RAG supplies no behavior change. Knowledge problems → RAG; behavior problems → fine-tuning.
-8. Explain how embedding models are trained and use it to account for two practical retrieval behaviors: the query/document asymmetry, and why a general model can underperform on a specialized corpus. — **Model answer:** Embedding models are trained by *contrastive learning* in a *dual-encoder* setup: positive pairs (e.g., a query and its answering passage) are pulled together and negatives — especially hard negatives — pushed apart, via a contrastive (InfoNCE) loss, so that geometric closeness encodes semantic relatedness. (1) Asymmetry: retrieval training pairs are short query ↔ long document, so the model learns a directional query→document relationship (not a symmetric same-text similarity) — hence dual encoders and query/document task prefixes. (2) Domain fit: the model only learns the relationships present in its training pairs; a model trained on general web Q&A never learned what relevance means for specialized jargon, so it organizes that corpus poorly — fine-tuning on in-domain pairs fixes it. Credit for the contrastive/dual-encoder mechanism and tying both behaviors to it.
+8. [deep-dive] Explain how embedding models are trained and use it to account for two practical retrieval behaviors: the query/document asymmetry, and why a general model can underperform on a specialized corpus. — **Model answer:** Embedding models are trained by *contrastive learning* in a *dual-encoder* setup: positive pairs (e.g., a query and its answering passage) are pulled together and negatives — especially hard negatives — pushed apart, via a contrastive (InfoNCE) loss, so that geometric closeness encodes semantic relatedness. (1) Asymmetry: retrieval training pairs are short query ↔ long document, so the model learns a directional query→document relationship (not a symmetric same-text similarity) — hence dual encoders and query/document task prefixes. (2) Domain fit: the model only learns the relationships present in its training pairs; a model trained on general web Q&A never learned what relevance means for specialized jargon, so it organizes that corpus poorly — fine-tuning on in-domain pairs fixes it. Credit for the contrastive/dual-encoder mechanism and tying both behaviors to it.
 
 ### Long Answer
 
 1. Walk through the full RAG pipeline end to end, naming each stage and what can go wrong at it. — **Model answer / rubric:** Indexing (offline): collect corpus → chunk (failure: bad chunk size/fragmentation) → embed each chunk (failure: wrong/weak embedding model, domain mismatch) → store in vector DB (failure: index drift, low ANN recall). Retrieval (online): embed query → ANN search, optionally hybrid dense+sparse (failure: retrieval miss, vocabulary mismatch) → rerank (failure: relevant chunk left outside top-k). Generation: place top chunks in prompt → LLM answers with citations (failure: ignoring context, hallucination, lost-in-the-middle, no abstention). Credit for naming all stages, the indexing/retrieval/generation split, and stage-specific failures.
 2. Explain hybrid search: what dense and sparse retrieval each do well and badly, why combining them helps, and how results are fused. — **Model answer / rubric:** Dense (embedding) search matches meaning — catches paraphrases and synonyms — but blurs rare exact terms (error codes, IDs, names). Sparse (BM25) matches exact terms via TF-IDF with saturation and length normalization — nails identifiers — but has no notion of meaning so misses paraphrases. They have complementary failure modes, so their union covers cases each misses. Fusion: Reciprocal Rank Fusion (rank-based, `Σ 1/(k+rank)`, no score normalization needed) is the robust default; weighted score combination requires normalizing the non-comparable score scales. Credit for the complementary-failure-modes argument and correct RRF description.
 3. Compare RAG, long-context, and fine-tuning: what each is for, strengths, weaknesses, and the decision rule. — **Model answer / rubric:** RAG: retrieve at query time; for large/dynamic/private corpora needing citations; instant updates, auditable, cost-efficient; weakness: retrieval can miss, pipeline complexity, latency. Long-context: put documents directly in a large window; for small corpora and whole-document reasoning; simple, no retrieval miss; weakness: window-limited, expensive per token, slow TTFT, degrades on very long input. Fine-tuning: train the weights; for behavior/format/style/skill; changes how the model acts, can shorten prompts; weakness: unreliable for facts, frozen knowledge, needs a training pipeline, redone on base-model updates. Rule: knowledge → RAG/long-context (large+dynamic → RAG, small+holistic → long-context); behavior → fine-tuning; they compose. Credit for the knowledge-vs-behavior framing and correct trade-offs.
-4. Explain ANN search and the recall/latency/cost/memory trade-off, contrasting HNSW and IVF. — **Model answer / rubric:** Exact kNN is O(N) per query and doesn't scale; ANN trades a tunable amount of recall for large speed gains via an index. HNSW: multi-layer navigable graph, ~logarithmic query time, excellent recall/speed, supports incremental inserts, but high memory; tune `M`, `efConstruction`, `efSearch`. IVF: clusters vectors into partitions, searches only the `nprobe` nearest, lower memory and fast builds, but can miss neighbors across partition boundaries and is less update-friendly. Quantization (PQ/scalar) cuts memory at a recall cost. You cannot maximize recall, speed, low memory, and fast inserts simultaneously — choose by constraints and measure recall against an exact baseline. Credit for the ANN rationale, the trade-off triangle, and accurate HNSW/IVF contrast.
+4. [deep-dive] Explain ANN search and the recall/latency/cost/memory trade-off, contrasting HNSW and IVF. — **Model answer / rubric:** Exact kNN is O(N) per query and doesn't scale; ANN trades a tunable amount of recall for large speed gains via an index. HNSW: multi-layer navigable graph, ~logarithmic query time, excellent recall/speed, supports incremental inserts, but high memory; tune `M`, `efConstruction`, `efSearch`. IVF: clusters vectors into partitions, searches only the `nprobe` nearest, lower memory and fast builds, but can miss neighbors across partition boundaries and is less update-friendly. Quantization (PQ/scalar) cuts memory at a recall cost. You cannot maximize recall, speed, low memory, and fast inserts simultaneously — choose by constraints and measure recall against an exact baseline. Credit for the ANN rationale, the trade-off triangle, and accurate HNSW/IVF contrast.
 
 ### Applied Scenario
 

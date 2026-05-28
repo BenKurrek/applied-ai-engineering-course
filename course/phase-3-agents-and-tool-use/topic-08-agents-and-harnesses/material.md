@@ -343,7 +343,15 @@ selection.
 
 ## 8.4 — Planning: upfront vs. interleaved; decomposition; subagents
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to §8.5. The deep
+> dive is interview-bait and worth doing eventually, but it is not required to
+> advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 For non-trivial tasks the agent needs a **plan** — a strategy for how to get from goal to
 done. There are two ends of a spectrum:
@@ -386,62 +394,21 @@ risk that information needed by one subagent is stranded in another's context. S
 help most when subtasks are *separable* and each generates a lot of intermediate context
 the parent doesn't need. (Full multi-agent treatment in 8.7.)
 
-**Reflection and self-critique.** ReAct (8.3) interleaves *acting* with reasoning, but it
-does not, on its own, make the agent step back and ask "is what I just produced actually
-good?" **Reflection** patterns add exactly that: an explicit step where the agent (or a
-separate critic) **evaluates its own recent output or trajectory, identifies problems,
-and feeds that critique back in** before continuing or retrying. It is planning applied
-*backwards* — re-planning informed by a judgment of what went wrong.
-
-Three patterns, increasingly structured:
-
-- **Self-critique** — after producing a result, the agent is prompted to critique it
-  ("review the draft above; list errors and weaknesses"), then revise. A single
-  generate → critique → revise pass.
-- **Verifier / generate-and-check** — a *separate* check decides whether the output is
-  acceptable. The verifier can be **deterministic** (run the tests, validate the schema,
-  execute the code) or an **LLM-as-judge** (Topic 9.5). Deterministic verifiers are far
-  more trustworthy when available — a passing test suite is ground truth; a model
-  critiquing itself can be wrong or sycophantic.
-- **Reflexion-style loops** — from the *Reflexion* paper (Shinn et al., 2023 [6]): the
-  agent attempts the task, a verifier produces a signal (pass/fail, error output), and
-  the agent writes a **natural-language reflection** on *why* it failed — that reflection
-  is added to the context for the **next attempt**, so the agent learns from the failure
-  within the run without any weight update. It is iterative: attempt → evaluate →
-  reflect → retry.
-
-**Why reflection helps:** it catches error cascades (8.8) early — a bad intermediate
-result is criticized and corrected *before* later steps build on it — and it turns a
-verifier signal into a concrete improvement rather than a blind retry.
-
-**The costs and limits.** Reflection multiplies model calls (every critique and retry is
-more tokens and latency — relevant to the cost model in 8.12). And **self-critique with
-no external verifier is weak**: a model judging its own work shares the blind spots that
-produced the work, and can "reflect" itself into a confident wrong answer or loop on a
-non-improvement. Reflection is strongest when the critique signal comes from *outside* the
-model — a real test run, a schema validator, a tool result — i.e. when it is *grounded*,
-the same lesson as ReAct. Use a deterministic verifier whenever the task admits one.
-
-### Key terms
+### Overview — Key terms
 
 - **Upfront planning (plan-then-execute)** — produce a full plan first, then execute it.
 - **Interleaved planning** — plan the next step, act, observe, re-plan; the ReAct style.
 - **Decomposition** — breaking a large goal into smaller, concrete, achievable subtasks.
 - **Subagent** — a child agent spawned to handle a subtask, typically with its own fresh context and focused tools.
 - **Orchestrator** — the parent agent that decomposes the task, spawns subagents, and integrates their results.
-- **Reflection / self-critique** — an explicit step where the agent evaluates its own recent output, identifies problems, and feeds that critique back before continuing or retrying.
-- **Verifier** — a separate check (deterministic — tests, schema validation; or an LLM-as-judge) that decides whether output is acceptable.
-- **Reflexion** — a pattern (Shinn et al., 2023) where a verifier signal drives a natural-language reflection that is added to context for the next attempt; iterative attempt → evaluate → reflect → retry.
 
-### Common misconceptions
+### Overview — Common misconceptions
 
 - ❌ "A good agent makes a perfect plan and follows it." → ✅ Plans rarely survive contact with reality; the best agents re-plan as they learn. Pure plan-then-execute is brittle.
 - ❌ "Subagents are mainly about parallel speed." → ✅ The biggest benefit is *context isolation* — keeping each subagent's noisy intermediate work out of the parent's context. Parallelism is a secondary bonus.
 - ❌ "More decomposition is always better." → ✅ Over-decomposition adds coordination overhead and call cost; steps that are too granular waste tokens and lose the thread.
-- ❌ "Self-critique always improves the output." → ✅ A model critiquing its own work shares the blind spots that produced it; reflection is reliable only when the critique signal is *grounded* — from a deterministic verifier (tests, schema) or a real tool result — not the model marking its own homework.
-- ❌ "Reflexion retrains or updates the model." → ✅ No weights change. Reflexion adds a natural-language reflection on the failure *to the context* for the next attempt — in-context learning within the run, not fine-tuning.
 
-### Worked example
+### Overview — Worked example
 
 Task: "Write a competitive analysis of three products." A monolithic agent does all the
 research and writing in one context — by the time it writes, the context is bloated with
@@ -484,12 +451,98 @@ chain that passes a baton (full treatment in 8.7):
 The tell: orchestrator/worker *delegates and integrates* (workers report up); handoff
 *transfers control* (the baton moves down the line).
 
-### Check questions
+### Overview — Check questions
 
 1. A team ships an agent that produces a full step-by-step plan and then executes it exactly, never revising. On unpredictable tasks it frequently fails partway through. Diagnose the planning choice and prescribe the fix, naming the trade-off they were trying to get and the one they sacrificed. — **Answer:** They chose pure upfront (plan-then-execute) planning. Its benefit is structure and a reviewable plan; its cost is brittleness — plans rarely survive contact with reality, and following one blindly handles surprises badly. Fix: keep a rough upfront plan for direction but execute interleaved, *re-planning when reality diverges* (a maintained todo list is the common concrete pattern). They wanted legibility/structure and sacrificed adaptivity; the combination recovers both.
 2. A developer adds subagents purely to make a task run faster and is surprised that, for their tightly-sequential task, it does not help. What did they misunderstand about the *primary* reason subagents exist? — **Answer:** They treated subagents as a parallelism/speed tool. The primary benefit is **context isolation** — each subagent works in a fresh, focused window and returns only a concise result, keeping its noisy intermediate work out of the parent's context (fighting bloat and lost-in-the-middle). Parallelism is a secondary bonus that only materializes for *independent* subtasks; for a sequential task there is little speed to gain, but the isolation benefit can still apply.
 3. Give a concrete example of *poor* decomposition of the goal "improve our app's onboarding," and explain which decomposition failure (too big, too vague, or mis-ordered) it shows and why it would hurt the agent. — **Answer:** Example of *too vague / too big*: a single subtask "make onboarding better" — it is not concrete or individually achievable, gives no measurable progress, and the agent cannot tell when it is done. Example of *mis-ordered*: "ship the redesign" before "identify where users drop off" — the agent acts before it has the information the action depends on. Good decomposition yields concrete, achievable, correctly-ordered, measurable subtasks; the failure modes above are a leading cause of agent failure because each step becomes intractable or premature.
-4. A coding agent writes a fix, immediately re-reads its own diff, declares it "looks correct," and moves on — yet the fix is wrong. A teammate proposes adding a Reflexion-style loop instead. Explain what is weak about the current self-critique and what specifically a Reflexion loop adds. — **Answer:** The current step is *ungrounded* self-critique: the model judges its own output using the same reasoning that produced the bug, so it shares the blind spot and rubber-stamps the error. A Reflexion-style loop adds an *external verifier signal* — run the test suite — and uses its result: on failure the agent writes a natural-language reflection on *why* it failed, that reflection is added to context, and it retries. The improvement is twofold: the pass/fail signal is ground truth (a real test run, not the model's opinion), and the reflection turns that signal into a concrete correction for the next attempt rather than a blind retry. Deterministic verifier beats self-judgment whenever the task admits one.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview covered planning, decomposition, and subagents — the *forward-looking*
+side of agent self-management. This section covers the *backward-looking* side:
+**reflection** patterns that have the agent (or a separate critic) judge what it
+just produced and feed that judgment back in. It is planning applied in reverse —
+re-planning informed by an evaluation of what went wrong. Interview-bait and **not
+required** to advance and not in the topic exam.
+
+**Reflection and self-critique.** ReAct (8.3) interleaves *acting* with reasoning, but it
+does not, on its own, make the agent step back and ask "is what I just produced actually
+good?" **Reflection** patterns add exactly that: an explicit step where the agent (or a
+separate critic) **evaluates its own recent output or trajectory, identifies problems,
+and feeds that critique back in** before continuing or retrying.
+
+Three patterns, increasingly structured:
+
+- **Self-critique** — after producing a result, the agent is prompted to critique it
+  ("review the draft above; list errors and weaknesses"), then revise. A single
+  generate → critique → revise pass.
+- **Verifier / generate-and-check** — a *separate* check decides whether the output is
+  acceptable. The verifier can be **deterministic** (run the tests, validate the schema,
+  execute the code) or an **LLM-as-judge** (Topic 9.5). Deterministic verifiers are far
+  more trustworthy when available — a passing test suite is ground truth; a model
+  critiquing itself can be wrong or sycophantic.
+- **Reflexion-style loops** — from the *Reflexion* paper (Shinn et al., 2023 [6]): the
+  agent attempts the task, a verifier produces a signal (pass/fail, error output), and
+  the agent writes a **natural-language reflection** on *why* it failed — that reflection
+  is added to the context for the **next attempt**, so the agent learns from the failure
+  within the run without any weight update. It is iterative: attempt → evaluate →
+  reflect → retry.
+
+**Why reflection helps:** it catches error cascades (8.8) early — a bad intermediate
+result is criticized and corrected *before* later steps build on it — and it turns a
+verifier signal into a concrete improvement rather than a blind retry.
+
+**The costs and limits.** Reflection multiplies model calls (every critique and retry is
+more tokens and latency — relevant to the cost model in 8.12). And **self-critique with
+no external verifier is weak**: a model judging its own work shares the blind spots that
+produced the work, and can "reflect" itself into a confident wrong answer or loop on a
+non-improvement. Reflection is strongest when the critique signal comes from *outside* the
+model — a real test run, a schema validator, a tool result — i.e. when it is *grounded*,
+the same lesson as ReAct. Use a deterministic verifier whenever the task admits one.
+
+### Deep dive — Key terms
+
+- **Reflection / self-critique** — an explicit step where the agent evaluates its own recent output, identifies problems, and feeds that critique back before continuing or retrying.
+- **Verifier** — a separate check (deterministic — tests, schema validation; or an LLM-as-judge) that decides whether output is acceptable.
+- **Reflexion** — a pattern (Shinn et al., 2023) where a verifier signal drives a natural-language reflection that is added to context for the next attempt; iterative attempt → evaluate → reflect → retry.
+
+### Deep dive — Common misconceptions
+
+- ❌ "Self-critique always improves the output." → ✅ A model critiquing its own work shares the blind spots that produced it; reflection is reliable only when the critique signal is *grounded* — from a deterministic verifier (tests, schema) or a real tool result — not the model marking its own homework.
+- ❌ "Reflexion retrains or updates the model." → ✅ No weights change. Reflexion adds a natural-language reflection on the failure *to the context* for the next attempt — in-context learning within the run, not fine-tuning.
+
+### Deep dive — Worked example
+
+Take a coding agent fixing a failing test. The three reflection patterns play out
+differently on the same task:
+
+- **Self-critique (ungrounded).** The agent writes a fix, then is prompted "review
+  your diff and flag any issues." The model re-reads its own work using the same
+  reasoning that produced it, declares the fix correct, and moves on. The bug
+  ships. This is the failure case the misconceptions warn about: the critic shares
+  the bug's blind spot.
+- **Verifier (deterministic).** The agent writes the fix and the harness runs the
+  test suite. Tests fail. The signal is ground truth — there is no question whether
+  the fix worked; the test runner is not sycophantic. The agent now *knows* it is
+  wrong, which is the prerequisite for fixing it.
+- **Reflexion loop.** Same verifier signal, but instead of a blind retry the agent
+  is prompted "the tests failed with output X — write a brief reflection on why
+  your previous attempt was wrong." The natural-language reflection ("I missed
+  that the function is called with negative inputs") is added to the context, and
+  the agent retries. The retry now conditions on a concrete diagnosis, not just a
+  pass/fail. Iterate until pass or the budget runs out.
+
+The lesson is the same as ReAct's: the reflection is only as good as the signal
+behind it. Deterministic verifiers (tests, schema validators, real tool results)
+beat self-judgment whenever the task admits one.
+
+### Deep dive — Check questions
+
+1. A coding agent writes a fix, immediately re-reads its own diff, declares it "looks correct," and moves on — yet the fix is wrong. A teammate proposes adding a Reflexion-style loop instead. Explain what is weak about the current self-critique and what specifically a Reflexion loop adds. — **Answer:** The current step is *ungrounded* self-critique: the model judges its own output using the same reasoning that produced the bug, so it shares the blind spot and rubber-stamps the error. A Reflexion-style loop adds an *external verifier signal* — run the test suite — and uses its result: on failure the agent writes a natural-language reflection on *why* it failed, that reflection is added to context, and it retries. The improvement is twofold: the pass/fail signal is ground truth (a real test run, not the model's opinion), and the reflection turns that signal into a concrete correction for the next attempt rather than a blind retry. Deterministic verifier beats self-judgment whenever the task admits one.
+2. A teammate says "Reflexion is basically online fine-tuning — the agent learns from its mistakes within the run, so the model is being updated." Two specific things wrong with this — name them. — **Answer:** (1) **No weights change.** Reflexion is purely in-context: the natural-language reflection on the failure is appended to the *context window* for the next attempt; the model's parameters are byte-identical before and after. Fine-tuning, by contrast, is a deliberate offline training process that updates weights (Topic 14). (2) **The improvement does not persist across runs.** Because nothing is written to the weights, a fresh run with a fresh context starts knowing nothing — the agent has not "learned" in any durable sense. The lesson lives only inside the one run's context, the same way any other in-context information does (1.2). Reflexion is grounded *prompting strategy*, not training.
 
 ---
 
@@ -1415,7 +1468,15 @@ a later step might need it). The run continues correctly with a much smaller con
 
 ## 8.14 — Observability: trace and span structure
 
-### Concept
+> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
+> two parts: a short **Overview** that everyone needs (taught and tested normally),
+> and a longer **Deep dive** with the mechanism details (skip-by-default, available
+> on request). After the Overview and its check questions, the tutor will ask
+> whether to take the deep dive now, skip it for later, or advance to the next
+> topic. The deep dive is interview-bait and worth doing eventually, but it is not
+> required to advance, and its content is not in the topic exam.
+
+### Overview — Concept
 
 Section 8.6 named logging as a core harness component and 8.11 made it a precondition for
 trajectory evaluation. This section makes it concrete: *what structure* do you record so a
@@ -1436,6 +1497,89 @@ nested **spans**.
 
 This tree is what lets you answer "what happened, in what order, nested how" for a run you
 cannot reproduce on demand (non-determinism, 8.8).
+
+**Why this structure specifically — what the tree gives you that a flat log cannot:**
+
+- **Trajectory reconstruction** — the span tree replays the exact sequence and nesting
+  of a run you cannot reproduce. You can see step 7 called the wrong tool, step 8 built
+  on its bad result (error cascade — 8.8), and exactly when compaction dropped the
+  goal.
+- **Cost and latency localization** — per-span tokens/cost/duration show *which* steps
+  and tools are expensive or slow, instead of a single opaque run total.
+- **The substrate for trajectory evaluation** — trajectory eval (8.11) runs over the
+  recorded span tree; without it there is no trace to score. The same structure you
+  need in production to debug failed runs is what you need in development and CI to
+  evaluate the agent.
+
+A flat ordered list of log lines preserves only time order; it loses which tool call
+belonged to which subagent, which sub-step belonged to which loop iteration, and where
+the boundaries of a delegated unit of work were. The tree is the only structure that
+preserves all three.
+
+### Overview — Key terms
+
+- **Trace** — the structured record of one complete agent run, identified by a `trace_id`.
+- **Span** — one timed unit of work within a run (a model call, tool execution, compaction, subagent), with `span_id` and `parent_span_id`.
+- **Span tree** — spans nested via `parent_span_id` so the structure mirrors the agent's actual execution (subagent spans under the orchestrator, tool spans under loop steps).
+
+### Overview — Common misconceptions
+
+- ❌ "Plain text log lines are enough to debug an agent." → ✅ A non-deterministic, deeply-nested run needs a structured trace of nested spans; flat logs cannot be reliably reconstructed into the run's actual sequence and nesting.
+- ❌ "One log entry per run is fine." → ✅ You need a span per unit of work (each model call, tool call, compaction, subagent) — that granularity is what localizes which step failed, looped, or was expensive.
+- ❌ "Observability is a production-only concern." → ✅ The same span/trace structure is the substrate trajectory evaluation (8.11) runs over — it is needed in development and CI, not only in production.
+
+### Overview — Worked example
+
+A coding agent run fails: the final answer is wrong. The flat-log version is a 4,000-line
+text dump — effectively unreadable. The **trace** version: one `trace_id`, a root span,
+18 child spans nested by `parent_span_id` into a tree that mirrors the agent's actual
+execution.
+
+That run as a span tree:
+
+```
+trace trc_9f2a  (final_status: "success" ← wrongly; 18 spans)
+│
+├─ llm span        step 6   model_call      stop_reason: tool_use
+│  └─ tool span    step 6   run_tests       status: error  ◀── CASCADE ORIGIN
+│                                           (tests failed here)
+├─ llm span        step 7   model_call      misreads the failure ✗
+│  └─ tool span    step 7   edit_file       (fixing the wrong thing)
+├─ llm span        step 8   model_call
+│  └─ tool span    step 8   edit_file
+│  ⋮
+├─ compaction span step 11  tokens 48k→12k  summary dropped the
+│                                           failing-test detail (lossy)
+│  ⋮
+├─ llm span        step 12  model_call      now fully off-track
+│  └─ tool span    step 12  edit_file
+│  ⋮
+└─ llm span        step 18  model_call      stop_reason: end_turn
+                                            (wrong answer returned)
+```
+
+The tree marks the **cascade-origin span** (the failed `run_tests` at step 6) and shows
+every later span hanging off a trajectory built on it. A flat log gives you 4,000
+interleaved lines; the span tree gives you the failure's origin, its propagation, and the
+lossy compaction that sealed it — at a glance.
+
+### Overview — Check questions
+
+1. Why is `parent_span_id` essential rather than just recording a flat ordered list of spans? Give a concrete agent structure where a flat list loses critical information. — **Answer:** `parent_span_id` makes the spans a *tree* that mirrors the agent's real execution structure; a flat ordered list only preserves time order. Concrete case: an orchestrator with three subagents (8.7). In a flat list you see a stream of model and tool spans interleaved in time and cannot tell which tool call belonged to which subagent — the nesting is lost. With `parent_span_id`, each subagent's spans nest under its `subagent` span, so you can isolate one subagent's behavior. Tool spans nesting under the loop step that requested them is the same point at smaller scale.
+2. A team logs only a single text line per run ("run X — success/failure"). Give two distinct things this destroys that a span tree preserves, beyond just "more detail." — **Answer:** (1) **Cost/latency localization** — with a span per unit of work you can see *which* model calls and tool executions consumed which fraction of the run's tokens/cost/wall-clock; a single line gives you one opaque total and no way to point at the expensive step. (2) **The substrate for trajectory evaluation** — trajectory eval (8.11) runs over the recorded span tree, scoring tool choices, ordering, error recovery, and so on; a one-line log gives evaluation nothing to score and reduces eval to final-outcome only. The granularity is what makes both debugging and evaluation possible.
+
+---
+
+### Deep dive — Concept *(optional)*
+
+The Overview established *what* to record (a tree of spans) and *why* (reconstruction,
+cost localization, substrate for eval). This section is the implementation layer: the
+exact JSON shape of a span, the per-type `attributes` catalog (what an llm span carries
+vs. a tool span vs. a compaction span vs. a guardrail span vs. a subagent span), the
+run-level metrics on the root, how the schema aligns with the OpenTelemetry GenAI
+conventions so agent traces slot into existing observability backends, and the
+out-of-line storage pattern for large payloads. Interview-bait and **not required** to
+advance and not in the topic exam.
 
 **A concrete span schema.** Every span, regardless of type, carries:
 
@@ -1479,89 +1623,78 @@ alert on: `task`, `final_status` (`success` | `failed` | `stopped: step_limit` |
 `total_steps`, `total_tokens`, `total_cost_usd`, `wall_clock_ms`, `tool_error_count`,
 `intervention_count` — the operational metrics of 8.11.
 
-**Why this structure specifically:**
+**OpenTelemetry GenAI convention alignment.** The `trace_id` / `span_id` /
+`parent_span_id` triple, the `start_time`/`end_time`/`status` envelope, and the
+`attributes` bag are the same shape as the **OpenTelemetry** distributed-tracing
+standard, with the GenAI semantic conventions specifying the attribute names for LLM
+calls (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, etc.).
+Following the convention means agent traces slot into the same observability backend
+(Tempo, Honeycomb, Datadog, etc.) as the rest of the system's traces — you can
+correlate an agent run with the upstream HTTP request that triggered it and the
+downstream database calls a tool made (Topic 12.7). Inventing a bespoke schema that
+ignores OTel costs you that correlation for no real upside.
 
-- **Reconstruction** — the span tree replays the exact sequence and nesting of a run you
-  cannot reproduce. You can see step 7 called the wrong tool, step 8 built on its bad
-  result (error cascade — 8.8), and exactly when compaction dropped the goal.
-- **It is the substrate for evaluation** — trajectory eval (8.11) runs over the recorded
-  span tree; without it there is no trace to score.
-- **It localizes cost and latency** — per-span tokens/cost/duration show *which* steps
-  and tools are expensive or slow, instead of a single opaque run total.
-- **It is correlatable** — `trace_id` / `span_id` / `parent_span_id` is the same model
-  production tracing tools (and the OpenTelemetry GenAI conventions) use, so agent traces
-  slot into the same observability backend as the rest of your system (Topic 12.7).
+**Out-of-line storage for large payloads.** Storing the full input message array inside
+every `llm` span is the obvious thing to do and the wrong thing to do. By the cost
+model in 8.12, each step's input message array is the *whole growing trajectory* — step
+n is ~`P + (n−1)·c` tokens — so storing the full array per span re-stores the trajectory
+~quadratically in the trace store. The standard fix: keep only a content **hash** (or a
+pointer/object-storage key) in the span and store the large payload **once** in object
+storage. The span tree stays small and fast to query; the full message array is still
+retrievable on demand via the pointer. Apply the same pattern to big tool results.
 
-A practical note: store large payloads (full message arrays, big tool results) out of the
-span itself — keep a hash or a pointer in the span and the blob in object storage — so the
-trace stays queryable and cheap while the full detail is still retrievable.
+### Deep dive — Key terms
 
-### Key terms
-
-- **Trace** — the structured record of one complete agent run, identified by a `trace_id`.
-- **Span** — one timed unit of work within a run (a model call, tool execution, compaction, subagent), with `span_id` and `parent_span_id`.
-- **Span tree** — spans nested via `parent_span_id` so the structure mirrors the agent's actual execution (subagent spans under the orchestrator, tool spans under loop steps).
 - **Span attributes** — type-specific recorded fields (tokens/cost for an llm span, arguments/result for a tool span, before/after sizes for a compaction span).
-- **Run-level metrics** — per-trace totals: final status, total steps, total tokens/cost, wall-clock, tool-error and intervention counts.
+- **Run-level metrics** — per-trace totals on the root span: final status, total steps, total tokens/cost, wall-clock, tool-error and intervention counts.
+- **OpenTelemetry GenAI conventions** — the standard attribute names (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, …) that let agent traces slot into general-purpose observability backends alongside the rest of the system's traces.
+- **Out-of-line payload storage** — keep a content hash or object-storage pointer in the span; store the large payload (full message array, big tool result) once in object storage to avoid re-storing the growing trajectory in every span.
 
-### Common misconceptions
+### Deep dive — Common misconceptions
 
-- ❌ "Plain text log lines are enough to debug an agent." → ✅ A non-deterministic, deeply-nested run needs a structured trace of nested spans; flat logs cannot be reliably reconstructed into the run's actual sequence and nesting.
-- ❌ "One log entry per run is fine." → ✅ You need a span per unit of work (each model call, tool call, compaction, subagent) — that granularity is what localizes which step failed, looped, or was expensive.
-- ❌ "Just put the full message arrays in every span." → ✅ That bloats the trace store and slows queries; keep a hash/pointer in the span and the large payload in object storage.
-- ❌ "Observability is a production-only concern." → ✅ The same span/trace structure is the substrate trajectory evaluation (8.11) runs over — it is needed in development and CI, not only in production.
+- ❌ "Just put the full message arrays in every span." → ✅ That re-stores the growing trajectory per span (quadratic in step count, by the 8.12 cost model) and bloats the trace store; keep a hash/pointer in the span and the large payload in object storage.
+- ❌ "Every span type should record the same fields." → ✅ The `attributes` bag is type-specific by design: an llm span needs tokens/cost/stop_reason; a tool span needs tool_name/tool_use_id/arguments/result; a compaction span needs tokens_before/after — recording the wrong fields wastes storage and still leaves you unable to debug the step type that matters.
+- ❌ "Agent observability needs a custom tracing format." → ✅ The trace_id/span_id/parent_span_id model and the GenAI semantic conventions are part of OpenTelemetry; following them lets agent traces correlate with the rest of the system's traces in the same backend.
 
-### Worked example
+### Deep dive — Worked example
 
-A coding agent run fails: the final answer is wrong. The flat-log version is a 4,000-line
-text dump — effectively unreadable. The **trace** version: one `trace_id`, a root span
-showing `final_status: "success"` (the model wrongly thought it was done — 8.2), 18 child
-spans.
+Take the failed-coding-agent run from the Overview and look at it with the schema in
+hand — the spans aren't just nodes in a tree, they carry the specific `attributes` you
+need to debug each step type.
 
-Querying the span tree: span at `step_index: 6` is a `tool` span,
-`tool_name: "run_tests"`, `status: "error"`, `is_error: true` — the tests failed. The
-`llm` span at `step_index: 7` shows the model *read* that failure but its output
-misinterpreted it. A `compaction` span at `step_index: 11` shows `messages_removed: 8` and
-a `summary_length` that — on inspection — dropped the original failing-test detail. From
-`step_index: 12` on, the agent is "fixing" the wrong thing — a visible **error cascade**
-seeded at step 7 and worsened by a lossy compaction at step 11. None of that is findable
-in a flat log; the span tree makes the failure's *origin and propagation* explicit. The
-per-span `cost_usd` totals also show step 7–18 burned 70% of the run's cost re-sending a
-trajectory built on the bad result — the 8.12 curve, made visible.
+- **The cascade-origin span (step 6, `tool` type).** Inspect `tool_name: "run_tests"`,
+  `status: "error"`, `is_error: true`, and `result` (the test output). The
+  `tool_use_id` ties this tool span to the `llm` span at step 6 that requested it, so
+  you can confirm which model decision caused this tool call.
+- **The misread span (step 7, `llm` type).** Inspect `output` and `stop_reason`: the
+  model read the failing test result and emitted an `edit_file` tool_use, but its
+  reasoning misinterpreted the failure. `input_tokens` shows the conversation had
+  already grown — the misread happens against an already-large context.
+- **The lossy compaction (step 11, `compaction` type).** Inspect `tokens_before: 48000`,
+  `tokens_after: 12000`, `messages_removed: 8`, `summary_length: 600`. Cross-reference
+  the summary content against what was removed: the original failing-test detail is
+  gone. This span makes "what the agent forgot, when" visible in one record.
+- **The cost curve, made visible.** Sum `cost_usd` across spans by `step_index`. Steps
+  7–18 burn 70% of the run's total — the agent kept re-sending a now-large trajectory
+  built on the bad step 6 result, exactly the 8.12 quadratic. The per-span cost field
+  is what makes that visible; a single run total would not.
+- **The root span.** `final_status: "success"` (wrongly — the model emitted `end_turn`
+  on a wrong answer, per 8.2), `total_steps: 18`, `total_cost_usd`, `total_tokens`,
+  `wall_clock_ms`, `tool_error_count: 1`. These are the operational metrics 8.11 sorts
+  and alerts on across many runs.
+- **Storage.** Each `llm` span's `input_messages` is stored as a hash + an
+  object-storage key, not inline; the trace store holds only the span metadata and
+  pointers. The full payloads are still retrievable on demand for the failing run.
 
-That run as a span tree — each node a span, nested by `parent_span_id`:
+The whole investigation — origin span, propagation, lossy compaction, cost curve, root
+status — depends on those per-type attributes being recorded. Without them you have a
+tree shape but nothing to inspect at each node.
 
-```
-trace trc_9f2a  (final_status: "success" ← wrongly; 18 spans)
-│
-├─ llm span        step 6   model_call      stop_reason: tool_use
-│  └─ tool span    step 6   run_tests       status: error  ◀── CASCADE ORIGIN
-│                                           (tests failed here)
-├─ llm span        step 7   model_call      misreads the failure ✗
-│  └─ tool span    step 7   edit_file       (fixing the wrong thing)
-├─ llm span        step 8   model_call
-│  └─ tool span    step 8   edit_file
-│  ⋮
-├─ compaction span step 11  tokens 48k→12k  summary dropped the
-│                                           failing-test detail (lossy)
-│  ⋮
-├─ llm span        step 12  model_call      now fully off-track
-│  └─ tool span    step 12  edit_file
-│  ⋮
-└─ llm span        step 18  model_call      stop_reason: end_turn
-                                            (wrong answer returned)
-```
+### Deep dive — Check questions
 
-The tree marks the **cascade-origin span** (the failed `run_tests` at step 6) and shows
-every later span hanging off a trajectory built on it. A flat log gives you 4,000
-interleaved lines; the span tree gives you the failure's origin, its propagation, and the
-lossy compaction that sealed it — at a glance.
-
-### Check questions
-
-1. Why is `parent_span_id` essential rather than just recording a flat ordered list of spans? Give a concrete agent structure where a flat list loses critical information. — **Answer:** `parent_span_id` makes the spans a *tree* that mirrors the agent's real execution structure; a flat ordered list only preserves time order. Concrete case: an orchestrator with three subagents (8.7). In a flat list you see a stream of model and tool spans interleaved in time and cannot tell which tool call belonged to which subagent — the nesting is lost. With `parent_span_id`, each subagent's spans nest under its `subagent` span, so you can isolate one subagent's behavior. Tool spans nesting under the loop step that requested them is the same point at smaller scale.
-2. An agent run produced a wrong answer. Name three specific span types you would inspect and what each would tell you about the failure. — **Answer:** (1) **`tool` spans** — check `status`/`is_error` and `result`: a failed or wrong tool result is a common root cause, and `tool_use_id` ties it to the model call that requested it. (2) **`llm` spans** — check the `output` and `stop_reason` around the suspected step: did the model misread a tool result, pick the wrong tool, or wrongly emit `end_turn`? (3) **`compaction` spans** — check `tokens_before/after` and `summary_length`: a lossy compaction that dropped a load-bearing fact (8.13) causes the agent to "forget" and go wrong afterward. Together they let you locate where the trajectory first went bad and how it propagated (error cascade).
-3. A team stores the full input message array inside every `llm` span. As runs get longer their trace store becomes slow and expensive to query. Explain the cause via the 8.12 cost model and give the standard fix. — **Answer:** By 8.12, each step's input message array is the *whole growing trajectory*, so step n's array is ~`P + (n−1)·c` tokens; storing the full array in every span re-stores the trajectory ~quadratically — the trace store grows like the run's own quadratic cost curve. The standard fix: keep only a content hash (or a pointer/key) in the span and store the large payload once in object storage. The span tree stays small and fast to query; the full message array is still retrievable on demand via the pointer.
+1. An agent run produced a wrong answer. Name three specific span types you would inspect and what each would tell you about the failure. — **Answer:** (1) **`tool` spans** — check `status`/`is_error` and `result`: a failed or wrong tool result is a common root cause, and `tool_use_id` ties it to the model call that requested it. (2) **`llm` spans** — check the `output` and `stop_reason` around the suspected step: did the model misread a tool result, pick the wrong tool, or wrongly emit `end_turn`? (3) **`compaction` spans** — check `tokens_before/after` and `summary_length`: a lossy compaction that dropped a load-bearing fact (8.13) causes the agent to "forget" and go wrong afterward. Together they let you locate where the trajectory first went bad and how it propagated (error cascade).
+2. A team stores the full input message array inside every `llm` span. As runs get longer their trace store becomes slow and expensive to query. Explain the cause via the 8.12 cost model and give the standard fix. — **Answer:** By 8.12, each step's input message array is the *whole growing trajectory*, so step n's array is ~`P + (n−1)·c` tokens; storing the full array in every span re-stores the trajectory ~quadratically — the trace store grows like the run's own quadratic cost curve. The standard fix: keep only a content hash (or a pointer/key) in the span and store the large payload once in object storage. The span tree stays small and fast to query; the full message array is still retrievable on demand via the pointer.
+3. A teammate invents a bespoke trace schema for their agent — custom field names for the model call, custom IDs, custom attribute keys — and is later frustrated that the agent's traces cannot be correlated with the upstream HTTP request that triggered it or the downstream database queries a tool made. What did they give up by ignoring the OpenTelemetry GenAI conventions, and what specifically should they have aligned to? — **Answer:** They gave up **cross-system correlation**. The OpenTelemetry distributed-tracing model (`trace_id` / `span_id` / `parent_span_id`, `start_time`/`end_time`/`status`, an `attributes` bag) is what general-purpose observability backends (Tempo, Honeycomb, Datadog, etc.) consume; using the same IDs and span structure means the agent's spans nest alongside the upstream HTTP span and the downstream DB spans in *one* trace, so you can see the whole request end-to-end. The **GenAI semantic conventions** further standardize LLM-call attribute names (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, etc.) so the backend can render and query them out of the box. Aligning to OTel + GenAI conventions costs nothing — they cover exactly the schema the agent already needs — and the upside is the agent slotting into the same observability backend as the rest of the system (Topic 12.7).
 
 ---
 
@@ -1581,7 +1714,7 @@ A pool the tutor draws from for the gated exam. Mixed-format, scored /100, 85 to
 8. When the agentic loop exits on `end_turn`, that confirms the task was completed correctly. — **Answer:** False. `end_turn` means only that the model stopped requesting tools; it can stop early or hallucinate completion. Correct completion must be separately verified.
 9. A 30-step agent run costs roughly 30× a single LLM call. — **Answer:** False. Because the API is stateless, every step re-sends the whole growing trajectory; total input tokens scale ~quadratically (`N·P + c·N(N−1)/2`), so a 30-step run typically costs several times the naive 30× estimate.
 10. Compacting an agent's context by deleting the oldest messages by a flat token count is a safe default. — **Answer:** False. A flat cut routinely splits a tool_use block from its matching tool_result, producing an orphaned block that makes the next API call malformed. Compaction must remove or replace whole tool_use/tool_result pairs.
-11. Self-critique — having a model review and revise its own output with no external check — reliably improves results. — **Answer:** False. A model critiquing its own work shares the blind spots that produced it. Reflection is reliable only when grounded by an external signal — a deterministic verifier (tests, schema validation) or a real tool result.
+11. [deep-dive] Self-critique — having a model review and revise its own output with no external check — reliably improves results. — **Answer:** False. A model critiquing its own work shares the blind spots that produced it. Reflection is reliable only when grounded by an external signal — a deterministic verifier (tests, schema validation) or a real tool result.
 12. An agent trajectory is best recorded as one structured trace of nested spans, not a flat stream of text log lines. — **Answer:** True. A non-deterministic, deeply-nested run needs a span tree (spans linked by `parent_span_id`) to be reconstructable; flat logs cannot reliably recover the run's sequence and nesting.
 
 ### Multiple Choice
@@ -1661,7 +1794,7 @@ A pool the tutor draws from for the gated exam. Mixed-format, scored /100, 85 to
    D. The model temperature is too high
    — **Answer:** B. A flat by-token cut routinely falls inside a tool_use/tool_result pair, leaving an orphaned block the API rejects. Compaction must operate on whole pairs and keep the prefix and recent turns intact.
 
-12. The most reliable form of agent self-improvement among these is:
+12. [deep-dive] The most reliable form of agent self-improvement among these is:
    A. The model critiques its own output with no external check
    B. A Reflexion-style loop driven by a deterministic verifier (e.g. a real test run), with a natural-language reflection fed into the next attempt
    C. Raising the temperature so the model "thinks differently" on retry
@@ -1714,7 +1847,7 @@ A pool the tutor draws from for the gated exam. Mixed-format, scored /100, 85 to
 
 4. Two candidate agents for a customer-support task both achieve a 90% final-outcome pass rate on your golden set. How do you decide which to ship? — **Model answer / rubric:** Final-outcome parity is not enough — go to trajectory and operational evaluation. Compare: average step count and tool calls (efficiency), cost per task, latency, tool-error rate, how often each loops or backtracks, how well each recovers from errors, whether each respects safety constraints and escalates appropriately, and human-intervention rate. Run each many times per task and inspect the pass-rate distribution and variance — a 90% mean with high variance is worse than a steady 90%. The agent with the cleaner trajectories, lower cost/latency, fewer unsafe actions, and lower variance is the one to ship. Should mention using this comparison as a regression baseline going forward.
 
-5. A production agent intermittently returns wrong answers; the failure does not reproduce when you re-run the task. Your harness currently emits flat text log lines. Describe how you would re-architect observability so this failure becomes debuggable, including the concrete structure you would record. — **Model answer / rubric:** Flat logs cannot reconstruct a non-deterministic, deeply-nested run, and the failure won't reproduce on demand — so you must capture each run as it happens in a *structured* form. Re-architect to a **trace of nested spans**: one `trace_id` per run; a `span` per unit of work (model call, tool execution, compaction pass, subagent), each with `span_id` and `parent_span_id` so the spans form a *tree* mirroring the agent's real structure (tool spans under their loop step, subagent spans under the orchestrator). Each span records `span_type`, start/end time, `status`, `step_index`, and type-specific `attributes`: an `llm` span carries `model`, input/output (or a hash + pointer to the stored payload), `stop_reason`, input/output/cached tokens, `cost_usd`, `latency_ms`; a `tool` span carries `tool_name`, `tool_use_id`, `arguments`, `result`/`is_error`; a `compaction` span carries `tokens_before/after` and `summary_length`; a `guardrail` span carries the decision. The root span carries run-level metrics (final status, total steps/tokens/cost, wall-clock, tool-error and intervention counts). With this, the specific failed run is fully reconstructable — you can see which step picked a wrong tool, which observation was misread, where an error cascaded, and whether a lossy compaction dropped a needed fact — and the same trace is the substrate trajectory evaluation (8.11) runs over. Strong answers note storing large payloads out-of-line (hash/pointer in the span, blob in object storage) and that `trace_id`/`span_id` correlate with the rest of the system's observability (Topic 12.7).
+5. [deep-dive] A production agent intermittently returns wrong answers; the failure does not reproduce when you re-run the task. Your harness currently emits flat text log lines. Describe how you would re-architect observability so this failure becomes debuggable, including the concrete structure you would record. — **Model answer / rubric:** Flat logs cannot reconstruct a non-deterministic, deeply-nested run, and the failure won't reproduce on demand — so you must capture each run as it happens in a *structured* form. Re-architect to a **trace of nested spans**: one `trace_id` per run; a `span` per unit of work (model call, tool execution, compaction pass, subagent), each with `span_id` and `parent_span_id` so the spans form a *tree* mirroring the agent's real structure (tool spans under their loop step, subagent spans under the orchestrator). Each span records `span_type`, start/end time, `status`, `step_index`, and type-specific `attributes`: an `llm` span carries `model`, input/output (or a hash + pointer to the stored payload), `stop_reason`, input/output/cached tokens, `cost_usd`, `latency_ms`; a `tool` span carries `tool_name`, `tool_use_id`, `arguments`, `result`/`is_error`; a `compaction` span carries `tokens_before/after` and `summary_length`; a `guardrail` span carries the decision. The root span carries run-level metrics (final status, total steps/tokens/cost, wall-clock, tool-error and intervention counts). With this, the specific failed run is fully reconstructable — you can see which step picked a wrong tool, which observation was misread, where an error cascaded, and whether a lossy compaction dropped a needed fact — and the same trace is the substrate trajectory evaluation (8.11) runs over. Strong answers note storing large payloads out-of-line (hash/pointer in the span, blob in object storage) and that `trace_id`/`span_id` correlate with the rest of the system's observability (Topic 12.7).
 
 ---
 
