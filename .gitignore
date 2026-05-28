@@ -2,5 +2,8 @@
 dev/
 docs/superpowers/
 
+# Runtime lock files written by the /learn skill at session start
+.in_use/
+
 # OS / editor cruft
 .DS_Store
