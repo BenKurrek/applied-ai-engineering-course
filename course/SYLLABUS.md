@@ -63,16 +63,16 @@ How large language models actually work, from the ground up. Everything in later
 assumes this material.
 
 ### Topic 1 — LLM Fundamentals
-- 1.0 A short history — how we got to LLMs (RNN → seq2seq+attention → transformer → scaling → post-training → reasoning)
+- 1.0 A short history — how we got to LLMs (RNN → seq2seq+attention → transformer → scaling → post-training → reasoning) *(context — no checks, no exam)*
 - 1.1 What an LLM is — next-token prediction as the whole job
 - 1.2 Training vs. inference; why weights are frozen when you use the model
-- 1.3 The transformer at a block level — embeddings → attention → FFN → unembedding
-- 1.4 Self-attention — queries/keys/values; why cost is O(n²) in sequence length
-- 1.5 Autoregressive generation; prefill vs. decode and why the distinction matters
-- 1.6 Logits → softmax → probability distribution over the vocabulary
+- 1.3 The transformer at a block level — embeddings → attention → FFN → unembedding *(context — no checks, no exam)*
+- 1.4 Self-attention — queries/keys/values; why cost is O(n²) in sequence length *(context — no checks, no exam)*
+- 1.5 Autoregressive generation; prefill vs. decode and why the distinction matters *(context — no checks, no exam)*
+- 1.6 Logits → softmax → probability distribution over the vocabulary *(context — no checks, no exam)*
 - 1.7 Parameters vs. context; statelessness of the API
 - 1.8 Inference-time quantization and speculative decoding
-- **Topic 1 Exam**
+- **Topic 1 Exam** *(scope: §1.1, §1.2, §1.7, §1.8)*
 
 ### Topic 2 — Tokenization
 - 2.1 What a token is; tokens ≠ words; tokens-per-word ratios

@@ -17,9 +17,12 @@ sub-chapter assumes the ones before it, and Topics 2–16 assume all of Topic 1.
 ## 1.0 — A short history: how we got to LLMs
 
 > **Context sub-chapter — no check questions, no exam items.** This is narrative
-> background that frames the rest of Topic 1. The tutor teaches it through, invites
-> questions, then moves on to §1.1. The mechanical content (transformer block,
-> inference, post-training) is taught and tested in §1.3–1.7 and Topic 14.
+> background framing the rest of Topic 1. The tutor teaches it through, invites
+> questions, then moves on to §1.1. The transformer mechanics (block layout,
+> self-attention, prefill/decode, logits→softmax) are introduced as background in
+> §1.3–1.6 — students see how they work but are not tested on them. The topic exam
+> covers only the applied sub-chapters (§1.1, §1.2, §1.7, §1.8). Post-training is
+> covered in Topic 14.
 
 ### Concept
 
@@ -395,13 +398,15 @@ application-layer engineering, not the model learning.)
 
 ## 1.3 — The transformer at a block level — embeddings → attention → FFN → unembedding
 
-> **Tiered sub-chapter — overview required, deep-dive optional.** This chapter has
-> two parts: a short **Overview** that everyone needs (taught and tested normally),
-> and a longer **Deep dive** with the mechanism details (skip-by-default, available
-> on request). After the Overview and its check questions, the tutor will ask
-> whether to take the deep dive now, skip it for later, or advance to §1.4. The deep
-> dive is interview-bait and worth doing eventually, but it is not required to
-> advance, and its content is not in the topic exam.
+> **Context sub-chapter — no check questions, no exam items.** This sub-chapter
+> introduces the transformer at a block level so students see the basic moving
+> parts (embeddings → attention → FFN → unembedding) — taught as background. No
+> checks and no exam items are drawn from it. The chapter has a short **Overview**
+> (the basic picture every student should see) and a longer **Deep dive**
+> (mechanism details — residuals, normalization placement, RoPE; interview-bait
+> but optional). After teaching the Overview, the tutor invites questions and then
+> offers the deep dive as optional further reading; the student can take it now,
+> skip it for later, or advance to §1.4. The deep dive has no checks either.
 
 ### Overview — Concept
 
@@ -541,25 +546,6 @@ per position. After N blocks, the final vector at position `sat` is projected th
 the unembedding matrix into ~100k logits. Tokens like ` on`, ` down`, ` quietly` score
 high; ` purple` scores low. Softmax → probabilities → sample → next token.
 
-### Overview — Check questions
-
-1. Imagine you deleted *all* the self-attention sub-layers from a transformer but
-   kept the embeddings and FFNs. What single capability would the model lose, and
-   what would it then resemble? — **Answer:** It would lose the ability for any
-   token's representation to depend on any *other* token — every position would be
-   processed in total isolation. The model would resemble a per-token classifier
-   with no context: it could not resolve "it" to an earlier noun, could not
-   condition `Paris` on "capital of France," etc. This isolates *why* attention,
-   not the FFN, is the cross-position mechanism.
-2. A model with a 100,000-token vocabulary is asked to predict one next token.
-   Roughly how many numbers does the unembedding step produce, what are they
-   *before* normalization, and why is that step the same regardless of how
-   confident the model is? — **Answer:** It produces ~100,000 numbers — one logit
-   per vocabulary token. Before softmax they are raw, unbounded real scores, not
-   probabilities. The unembedding always emits the full vector of vocabulary logits
-   every step; "confidence" is a property of the *distribution* softmax produces,
-   not of how many logits are computed.
-
 ---
 
 ### Deep dive — Concept *(optional)*
@@ -680,30 +666,17 @@ residual per sub-layer), and the RMSNorm never sits on the main residual highway
 it always sits on a side path *into* the sub-layer. That is what "pre-norm" means
 in practice.
 
-### Deep dive — Check questions
-
-1. A teammate proposes removing residual connections "to simplify the architecture,
-   since they're just an addition." Why would a deep transformer become hard to
-   *train* without them? — **Answer:** The residual add gives information and,
-   critically, gradients a direct path through every block. Without it, gradients
-   must pass through dozens of sub-layers' transformations and tend to vanish or
-   explode, so the deep stack becomes very hard to optimize. The "just an addition"
-   is load-bearing — it is what makes training a deep stack tractable.
-2. A team trains a deep transformer with the normalization placed *after* each
-   sub-layer's residual add (post-norm) and finds the deep version barely trains,
-   while a shallow version is fine. They have residual connections, so why does
-   depth still break training, and what placement is the modern fix? — **Answer:**
-   With post-norm, the normalizer sits on the main path after the residual add, so
-   the signal is re-scaled at every one of the dozens of blocks; the residual is no
-   longer a clean, unmodified highway, and gradients/activations are repeatedly
-   distorted as depth grows. The modern fix is **pre-norm** placement: normalize
-   each sub-layer's *input* instead, leaving the residual path itself untouched
-   from the first block to the last — which is precisely what lets very deep stacks
-   train. (Most current models also use RMSNorm rather than classic LayerNorm.)
-
 ---
 
 ## 1.4 — Self-attention — queries/keys/values; why cost is O(n²) in sequence length
+
+> **Context sub-chapter — no check questions, no exam items.** Self-attention is
+> the cross-token information-flow mechanism and the source of the O(n²) cost
+> shape. Taught as background — the tutor explains the basic concepts and invites
+> questions, but does not quiz on them and no exam items are drawn from this
+> sub-chapter. The practical consequences of O(n²) (long-context cost, KV caching,
+> GQA/MQA) show up in Topic 4 (Context Window) and Topic 12 (Production) and are
+> tested there if at all.
 
 ### Concept
 
@@ -834,44 +807,18 @@ Now the cost: a
 1,000,000. A 100,000-token prompt needs 10,000,000,000 — ten billion. That quadratic
 blow-up is why long context is genuinely expensive.
 
-### Check questions
-
-1. In the sentence "The lawyer questioned the witness because she was nervous," the
-   pronoun `she` should attend strongly to `witness`. In Q/K/V terms, which of the three
-   vectors at `she` and which at `witness` do the work, and what is the dot product
-   between them measuring? — **Answer:** The **query** at `she` ("what referent am I
-   looking for?") is dot-producted against the **key** at `witness` ("what I offer for
-   matching"). That dot product is the relevance score; a high score gives `witness` a
-   large attention weight, so the **value** at `witness` dominates the blended output
-   that updates `she`'s representation. Naming each vector's role on a fresh sentence,
-   not reciting definitions, is the point.
-2. A team upgrades from an 8k-token prompt to a 64k-token prompt and is shocked the
-   attention cost did not merely grow 8×. By what factor did the attention work
-   *actually* grow, and why? — **Answer:** Roughly **64×**, not 8×. Attention is O(n²):
-   8× more tokens means 8² = 64× more query–key comparisons and a 64× larger attention
-   matrix in both compute and memory. The surprise comes from expecting linear scaling
-   from a quadratic mechanism.
-3. Why must attention be causally masked in a generative LLM, and what specifically
-   would go wrong *during training* if it were not? — **Answer:** Masking restricts each
-   token to attend only to itself and earlier tokens. Without it, while learning to
-   predict token n the model could attend *forward* to token n itself (and beyond) — it
-   would simply copy the answer it is supposed to predict, drive the loss to near zero,
-   and learn nothing useful for actual left-to-right generation.
-4. An engineer removes the √d_k division from scaled dot-product attention "to simplify
-   the formula." On a model with wide attention heads, what happens to the attention
-   weights and to training, and why does the *width* of the heads make it worse? —
-   **Answer:** Without the division, the query–key dot products have a magnitude that
-   grows with the head dimension d_k (a sum of more components has larger variance). Fed
-   into softmax, those large scores make the distribution extremely peaked — nearly
-   one-hot — so the model can barely blend information across tokens, and softmax in that
-   saturated regime has near-zero gradients, so training stalls. Wider heads (larger
-   d_k) make it worse because the dot-product magnitude grows with d_k; the √d_k factor
-   exists precisely to cancel that growth and keep softmax soft and trainable regardless
-   of head width.
-
 ---
 
 ## 1.5 — Autoregressive generation; prefill vs. decode and why the distinction matters
+
+> **Context sub-chapter — no check questions, no exam items.** Autoregressive
+> generation and the prefill/decode split are core mechanism but are taught as
+> background here — students see the basic concepts (one token at a time, parallel
+> prefill vs. sequential decode, KV cache, why output is more expensive than
+> input) but are not quizzed on them and no exam items are drawn from this
+> sub-chapter. The production-side consequences (latency, cost-per-token,
+> batching, prompt caching) come back in Topic 4, Topic 6, and Topic 12 and are
+> tested there.
 
 ### Concept
 
@@ -1040,43 +987,16 @@ The two phases compared side by side:
 | Latency metric | Time to first token (TTFT) | Time per output token (TPOT / ITL), tokens/sec |
 | Cost driver | Prompt length (input tokens) | Answer length (output tokens) |
 
-### Check questions
-
-1. A new GPU has *much* higher arithmetic throughput but the *same* memory bandwidth as
-   the old one. Which improves more on this hardware — prefill or decode — and why? —
-   **Answer:** Prefill improves much more. Prefill is compute-bound, so more arithmetic
-   throughput directly helps it. Decode is memory-bandwidth-bound — each step's
-   bottleneck is streaming the weights from memory — so leaving bandwidth unchanged
-   leaves decode speed essentially unchanged. This tests *which* resource bounds each
-   phase, not just their names.
-2. Two requests take the same total wall-clock time: request A is a 50,000-token prompt
-   with a 50-token answer; request B is a 200-token prompt with a 2,000-token answer.
-   Which one is doing more sequential work, and which one's latency would a faster
-   prefill kernel help? — **Answer:** Request B is doing far more *sequential* work — its
-   2,000 output tokens are 2,000 sequential decode steps, versus A's 50. A faster prefill
-   kernel helps **request A**, whose time is dominated by prefilling 50,000 input tokens;
-   it barely touches B, which is decode-dominated.
-3. Suppose decode were somehow made fully parallel like prefill. Which of these would
-   change — TTFT, total response time, or output-vs-input pricing — and which would not?
-   — **Answer:** Total response time would drop dramatically and the output/input price
-   asymmetry would largely collapse (output would no longer be a string of expensive
-   sequential steps). TTFT would be roughly *unchanged* — it is already set by prefill,
-   which was already parallel. This forces reasoning about what each phase actually
-   causes.
-4. A team wants to serve a much longer context window but finds the KV cache no longer
-   fits in GPU memory. A teammate suggests "just remove some attention heads." Explain
-   the better-known fix and why it preserves quality far more than dropping heads. —
-   **Answer:** The standard fix is **GQA** (or, more aggressively, MQA): keep all the
-   query heads but have groups of heads *share* a single key/value pair, so the K/V part
-   of the cache shrinks by the group/head count without removing any query head.
-   Dropping heads outright removes representational capacity — each head can learn a
-   distinct relation (1.4) — whereas GQA keeps every query head's distinct view and only
-   shares the K/V projections, which empirically costs very little quality. GQA/MQA are
-   the reason long-context windows are servable at all.
-
 ---
 
 ## 1.6 — Logits → softmax → probability distribution over the vocabulary
+
+> **Context sub-chapter — no check questions, no exam items.** Logits-to-softmax
+> is core mechanism but taught as background here — students see how the model
+> goes from internal scores (logits) to a probability distribution over the
+> vocabulary, but no quizzes and no exam items are drawn from this sub-chapter.
+> Topic 3 (Inference & Sampling) covers temperature, top-p, and top-k against
+> this background and tests them in their own right.
 
 ### Concept
 
@@ -1172,29 +1092,6 @@ large probability lead, and the negative-logit `idea` is squashed to near zero. 
 ~70% of the time, `rug` ~26%, `couch` rarely, `idea` almost never. Raise temperature
 and the gap narrows (`rug` becomes more competitive); lower it and `mat` approaches
 certainty — all by rescaling those logits before softmax.
-
-### Check questions
-
-1. Someone reads off a model's raw logit for one token as `-3.1` and concludes "the
-   model thinks that token is very unlikely — about a 3% chance." Identify the two
-   things wrong with that statement. — **Answer:** (a) A logit is *not* a probability —
-   it is an unbounded raw score, so `-3.1` does not denote 3% (or any percentage) on its
-   own. (b) A single logit means nothing in isolation: a token's probability depends on
-   *all* the other logits, because softmax normalizes across the whole vocabulary. A
-   logit of -3.1 could be the top token if every other logit is even lower.
-2. If you added the same constant (say +10) to *every* logit before softmax, would the
-   resulting probability distribution change? What does your answer reveal about what
-   softmax actually responds to? — **Answer:** No — the distribution is unchanged.
-   Softmax exponentiates and then normalizes, so a shared additive constant cancels in
-   the ratio. This reveals that softmax responds only to the *differences* (gaps) between
-   logits, not their absolute values — which is exactly why temperature, which rescales
-   those gaps, is the meaningful knob (Topic 3).
-3. Why do APIs return logprobs instead of raw probabilities, and what concretely becomes
-   easy *because* logprobs are additive? — **Answer:** Probabilities of long sequences
-   are vanishingly tiny and numerically unstable to multiply; logs are stable. Because
-   logprobs are additive, the log-likelihood of a whole generated sequence is just the
-   *sum* of its per-token logprobs (summing logs = multiplying probabilities) — so
-   scoring or comparing entire completions becomes a simple addition.
 
 ---
 
@@ -1451,7 +1348,12 @@ alone.
 ## Topic 01 — Exam Question Bank
 
 A pool the tutor draws from for the gated exam. Mixed-format, scored out of 100; 85 to
-pass. Free-form answers are graded on reasoning quality with partial credit.
+pass. Free-form answers are graded on reasoning quality with partial credit. **Scope:**
+the bank covers only the applied sub-chapters — §1.1 (what an LLM is), §1.2 (training
+vs. inference), §1.7 (parameters vs. context, statelessness), and §1.8 (inference-time
+quantization and speculative decoding). The context sub-chapters §1.0 (history) and
+§1.3–§1.6 (transformer block, self-attention, prefill/decode, logits→softmax) are
+taught as background and are *not* tested here.
 
 ### True / False
 
@@ -1464,50 +1366,19 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    the weights at the end of Tuesday differ from the weights at the start. — **Answer:**
    False. Inference is a forward pass only and never updates weights; the Tuesday
    requests leave the weights exactly as the Monday fine-tune left them.
-3. Removing the FFN sub-layers but keeping self-attention would still let tokens
-   exchange information with each other. — **Answer:** True. Cross-position information
-   flow is done by self-attention; the FFN is strictly position-wise, so its removal
-   does not affect whether tokens can read each other (it would, however, cripple
-   per-position processing).
-4. Doubling a prompt's length roughly doubles the self-attention compute for that
-   prompt. — **Answer:** False. Attention is O(n²), so doubling the length roughly
-   *quadruples* the attention compute and memory.
-5. In a single inference request, the input prompt and the generated output are
-   processed by the same kind of operation with the same performance profile. —
-   **Answer:** False. The prompt is handled by parallel, compute-bound prefill; the
-   output is generated by sequential, memory-bandwidth-bound decode — different
-   operations with very different cost/latency profiles.
-6. Because a logit can be a large positive number, a sufficiently large logit by itself
-   guarantees that token will be chosen. — **Answer:** False. A logit is meaningful only
-   relative to the other logits; whether a token is likely depends on the whole
-   post-softmax distribution, and which token is *chosen* also depends on the decoding
-   strategy.
-7. Passing a `conversation_id` to an API guarantees the model server is storing your
+3. Passing a `conversation_id` to an API guarantees the model server is storing your
    history for you. — **Answer:** False. The model API is stateless; any such ID is an
    application/SDK convenience, and the full history must still be sent as tokens each
    call.
-8. On hardware whose memory bandwidth is the binding constraint, generating output
-   tokens is the part of inference most affected. — **Answer:** True. Decode (output
-   generation) is memory-bandwidth-bound — each step streams the whole model's weights —
-   so it is what suffers most when bandwidth is the limit; prefill is compute-bound.
-9. Grouped-query attention (GQA) shrinks the KV cache by removing query heads from the
-   model. — **Answer:** False. GQA keeps every query head; it shares a single key/value
-   pair across a *group* of heads, shrinking only the K/V part of the cache — no query
-   head is removed.
-10. [deep-dive] Placing the normalization on a sub-layer's input (pre-norm) rather
-    than after the residual add (post-norm) is the placement that makes very deep
-    transformers trainable. — **Answer:** True. Pre-norm keeps the residual path a clean, unmodified
-    highway through the whole stack; post-norm rescales the main path at every block,
-    which makes deep stacks much harder to train.
-11. Speculative decoding speeds up generation by letting a small draft model approximate
-    the output, which slightly degrades quality. — **Answer:** False. The large target
-    model verifies every draft-proposed token, so the emitted sequence is exactly what
-    the target model would have produced alone — output quality is unchanged; only speed
-    changes.
-12. Serving a model in FP8 instead of BF16 speeds up decode mainly because decode is
-    memory-bandwidth-bound and FP8 halves the bytes streamed per weight. — **Answer:**
-    True. Decode's bottleneck is streaming weights from memory; lower precision means
-    fewer bytes per token through that bottleneck. Modern FP8 is near-lossless.
+4. Speculative decoding speeds up generation by letting a small draft model approximate
+   the output, which slightly degrades quality. — **Answer:** False. The large target
+   model verifies every draft-proposed token, so the emitted sequence is exactly what
+   the target model would have produced alone — output quality is unchanged; only speed
+   changes.
+5. Serving a model in FP8 instead of BF16 speeds up decode mainly because decode is
+   memory-bandwidth-bound and FP8 halves the bytes streamed per weight. — **Answer:**
+   True. Decode's bottleneck is streaming weights from memory; lower precision means
+   fewer bytes per token through that bottleneck. Modern FP8 is near-lossless.
 
 ### Multiple Choice
 
@@ -1521,41 +1392,7 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    D) Queried a cached copy of the web
    — **Answer:** B. There is no lookup or symbolic step in a base model; correctness here
    is a high-probability next-token prediction backed by strong training-data support.
-2. A model resolves the pronoun "it" in a long sentence to the correct earlier noun.
-   The component that makes this cross-token link possible is:
-   A) The embedding lookup, which encodes each token's meaning
-   B) The FFN sub-layer, which refines each token's representation
-   C) Self-attention, the only sub-layer that moves information between positions
-   D) Layer normalization, which keeps activations stable
-   — **Answer:** C. Embedding and FFN are position-wise and layer norm only rescales;
-   only self-attention lets one token's representation incorporate another's.
-3. A request's prompt is shortened from 20,000 to 5,000 tokens, but the requested answer
-   length is unchanged. The clearest expected effect is:
-   A) Total response time drops by roughly the same proportion as the prompt shrank
-   B) Time to first token drops markedly while per-output-token speed is ~unchanged
-   C) Per-output-token speed improves but TTFT is unchanged
-   D) Neither TTFT nor total time changes
-   — **Answer:** B. Prefill (hence TTFT) scales with prompt length, so TTFT drops; decode
-   speed is set by the memory-bound per-token loop and is unaffected by prompt length.
-4. Which change would most directly reduce *time to first token* for a request?
-   A) Asking the model for a shorter answer
-   B) Reusing a cached KV prefix so most of prefill is skipped
-   C) Lowering the sampling temperature
-   D) Raising `max_tokens`
-   — **Answer:** B. TTFT is dominated by prefill; skipping prefill via a cache hit cuts
-   it directly. A shorter answer only affects decode/total time; temperature and
-   `max_tokens` do not reduce prefill.
-5. Two candidate next tokens have logits 8.0 and 7.0. After softmax, the most accurate
-   statement is:
-   A) The first token has probability 8/15
-   B) The first token is somewhat more probable, but the exact probabilities depend on
-      every other token's logit too
-   C) The first token has exactly 8.0/(8.0+7.0) probability
-   D) Logits of 8.0 and 7.0 are already probabilities
-   — **Answer:** B. Softmax normalizes over the *entire* vocabulary, so two logits alone
-   do not fix the probabilities; the gap makes the first more probable but the values
-   depend on all logits.
-6. A teammate wants to cut bandwidth by sending only each new user message after turn 1.
+2. A teammate wants to cut bandwidth by sending only each new user message after turn 1.
    The result will be:
    A) Identical behavior, since the server retains the earlier turns
    B) Identical behavior, since the model memorized the earlier turns in its weights
@@ -1565,7 +1402,7 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    — **Answer:** C. The API is stateless and weights do not learn from a chat; dropping
    prior turns simply removes them from the model's view — usually not an error, just
    broken continuity.
-7. Which statement correctly distinguishes training from inference?
+3. Which statement correctly distinguishes training from inference?
    A) Both run backpropagation, but training does it more often
    B) Training adjusts weights via backpropagation; inference is a forward pass that
       changes no weights
@@ -1573,51 +1410,24 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    D) They are the same operation run on different hardware
    — **Answer:** B. Only training/fine-tuning runs backprop and updates weights;
    inference is purely a forward pass.
-8. A provider prices output tokens well above input tokens. The best *mechanical*
-   justification is:
-   A) Output tokens carry more information than input tokens
-   B) Output is produced one token at a time in a sequential, memory-bandwidth-bound
-      loop, while input is consumed in one parallel, compute-bound prefill pass
-   C) Output tokens are drawn from a larger vocabulary
-   D) The pricing is arbitrary and unrelated to how inference works
-   — **Answer:** B. The per-token cost asymmetry is a direct consequence of the
-   prefill/decode split, not of information content or vocabulary.
-9. A model must serve a much longer context window, but the KV cache no longer fits in
-   GPU memory. The architectural change most directly aimed at this problem is:
-   A) Increasing the vocabulary size
-   B) Grouped-query attention, which shares one key/value pair across a group of heads
-      so the KV cache shrinks while every query head is retained
-   C) Raising the sampling temperature
-   D) Removing the residual connections
-   — **Answer:** B. GQA (and the more aggressive MQA) shrink the K/V part of the cache by
-   sharing key/value projections across heads — the reason long contexts are servable.
-10. Scaled dot-product attention divides each query–key dot product by √d_k before
-    softmax. The purpose is:
-    A) To make the dot product faster to compute
-    B) To keep the score magnitude roughly constant regardless of head dimension, so
-       softmax does not saturate into a near-one-hot, near-zero-gradient regime
-    C) To convert the logits into probabilities
-    D) To mask out future tokens
-    — **Answer:** B. The √d_k factor cancels the variance growth of a d_k-term dot
-    product, keeping attention weights soft and gradients healthy.
-11. A provider offers a cheaper, faster "turbo" tier of the same model. The most likely
-    mechanism behind it is:
-    A) The turbo tier is a completely different, smaller model
-    B) The turbo tier serves the same weights at lower numeric precision (quantization),
-       trading a little quality for speed and lower memory/bandwidth cost
-    C) The turbo tier removes the system prompt
-    D) The turbo tier disables the KV cache
-    — **Answer:** B. Quantization is an inference-time precision choice for the same
-    weights; lower precision cuts memory-bandwidth cost (faster decode) and price.
-12. Speculative decoding produces a large speed-up on predictable text but a small one
-    on dense, surprising text. The reason is:
-    A) The target model is slower on surprising text
-    B) The draft model's acceptance rate is high on predictable text and low on
-       surprising text, and the speed-up scales with acceptance rate
-    C) Surprising text uses a larger vocabulary
-    D) Speculative decoding is disabled on hard text
-    — **Answer:** B. The win comes from the target model accepting several draft-proposed
-    tokens per pass; that acceptance rate tracks how predictable the text is.
+4. A provider offers a cheaper, faster "turbo" tier of the same model. The most likely
+   mechanism behind it is:
+   A) The turbo tier is a completely different, smaller model
+   B) The turbo tier serves the same weights at lower numeric precision (quantization),
+      trading a little quality for speed and lower memory/bandwidth cost
+   C) The turbo tier removes the system prompt
+   D) The turbo tier disables the KV cache
+   — **Answer:** B. Quantization is an inference-time precision choice for the same
+   weights; lower precision cuts memory-bandwidth cost (faster decode) and price.
+5. Speculative decoding produces a large speed-up on predictable text but a small one
+   on dense, surprising text. The reason is:
+   A) The target model is slower on surprising text
+   B) The draft model's acceptance rate is high on predictable text and low on
+      surprising text, and the speed-up scales with acceptance rate
+   C) Surprising text uses a larger vocabulary
+   D) Speculative decoding is disabled on hard text
+   — **Answer:** B. The win comes from the target model accepting several draft-proposed
+   tokens per pass; that acceptance rate tracks how predictable the text is.
 
 ### Short Answer
 
@@ -1642,24 +1452,7 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    the correct fact explicitly in context; if it then answers correctly, it was a
    context-coverage problem; if it still errs or contradicts, the parameters are
    asserting something and you have a stronger conflict to manage.
-3. Without the KV cache, what would the per-step cost of decode look like as the
-   sequence grows, and why? Explain what the cache stores and how it changes that. —
-   **Model answer:** Without it, every decode step would re-process the *entire*
-   sequence from scratch — so step n costs O(n) attention work and the whole generation
-   becomes roughly O(n²). The KV cache stores the key and value vectors for every
-   already-processed token, so each decode step only computes the *new* token's query
-   against the cached K/V — making each step roughly constant in prior length and the
-   generation roughly linear overall.
-4. A student claims "softmax just picks the biggest logit." Correct them precisely:
-   what does softmax actually output, what does the *picking* of a token, and how does
-   that division of labor matter for Topic 3? — **Model answer:** Softmax does not pick
-   anything — it transforms the whole logit vector into a probability *distribution*
-   (exponentiate, then normalize so values are in [0,1] and sum to 1). A separate
-   *decoding/sampling* step then selects a token from that distribution. The division
-   matters because Topic 3's knobs (temperature, top-p, greedy vs. sampling) all act on
-   that selection step or on the logits before softmax — the model's distribution and
-   the choice of token are deliberately decoupled.
-5. "Stateless API" and "frozen weights" are two different properties, yet both are
+3. "Stateless API" and "frozen weights" are two different properties, yet both are
    needed to explain why a model cannot recall a previous separate conversation.
    Explain each property's distinct contribution. — **Model answer:** *Frozen weights*
    means nothing said in any conversation alters the model — so the fact was never
@@ -1667,15 +1460,7 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    between calls — so the fact is not stored server-side either. Together they leave
    exactly one place request-specific info can live: the context window you send this
    call. A new conversation is a fresh empty context, so the fact is genuinely gone.
-6. Attention and the FFN are both inside every block, but swapping their roles would
-   break the model. For each, state what would be lost if that sub-layer alone were
-   removed. — **Model answer:** Remove **attention**: tokens can no longer read each
-   other — all cross-position information flow (coreference, conditioning a word on
-   earlier context) is gone; the model becomes a context-blind per-token function.
-   Remove the **FFN**: each position loses the bulk of its per-token processing capacity
-   and much of the stored factual knowledge (the FFN holds most parameters); attention
-   could still move information around but there is little machinery to transform it.
-7. Frozen weights are often presented as a constraint, but list two concrete *benefits*
+4. Frozen weights are often presented as a constraint, but list two concrete *benefits*
    for someone operating the model in production, and name the alternative (continuous
    weight updates from user input) and one specific risk it would introduce. — **Model
    answer:** Benefits: (a) reproducibility/testability — a fixed function can be
@@ -1683,70 +1468,23 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    pass is far cheaper than backprop, keeping serving fast. The alternative, updating
    weights live from user input, would introduce (among others) a poisoning risk: a
    malicious or simply wrong user could degrade the model's behavior for everyone.
-8. Explain why the KV cache's size is a long-context bottleneck, and how GQA/MQA address
-   it without simply discarding model capacity. — **Model answer:** The KV cache stores a
-   key and value vector per token, *per layer, per attention head*, so it grows with
-   sequence length and head count; for long contexts and large batches a per-head cache
-   would not fit in GPU memory, and (since decode is memory-bandwidth-bound) a bigger
-   cache also slows every decode step. MQA shares a single K/V pair across *all* heads;
-   GQA — the common middle ground — splits heads into groups that each share one K/V
-   pair. Both keep every *query* head intact, so each head still computes its own
-   distinct attention pattern; only the key/value projections are shared. This shrinks
-   the cache several-fold at little quality cost, which is what makes million-token
-   contexts servable.
-9. The attention formula divides query–key dot products by √d_k. Explain what goes wrong
-   if this scaling is omitted, and why the problem is tied to the head dimension d_k. —
-   **Model answer:** A query–key dot product sums d_k component-wise products, so its
-   typical magnitude (variance) grows with d_k. Unscaled, large scores drive softmax into
-   a saturated, near-one-hot regime: the model can barely blend information across
-   tokens, and softmax there has near-zero gradients, so training stalls. Dividing by
-   √d_k rescales scores to roughly unit variance *independent of d_k* — the factor is
-   sized exactly to cancel the standard-deviation growth of a d_k-term sum — keeping
-   attention soft and trainable however wide the heads are.
-10. Inference-time quantization and speculative decoding both make decode faster but in
-    very different ways. Explain each mechanism and, for each, state whether it changes
-    the model's output. — **Model answer:** Decode is memory-bandwidth-bound (1.5).
-    **Quantization** serves the model's weights at lower numeric precision (e.g. FP8 or
-    INT8 instead of BF16), so each decode step streams fewer bytes through the
-    memory-bandwidth bottleneck — faster decode, less GPU memory, lower cost. It *can*
-    slightly change the output, since the computed numbers differ — though modern 8-bit
-    is near-lossless and modern 4-bit is close. **Speculative decoding** uses a small,
-    fast draft model to propose several tokens, which the large target model then
-    verifies in a single parallel pass; accepted tokens cost one target pass instead of
-    many. It does *not* change the output: the target model has the final say on every
-    token, so the emitted sequence is exactly what it would have produced alone — only
-    speed changes, and the gain depends on the draft model's acceptance rate.
+5. Inference-time quantization and speculative decoding both make decode faster but in
+   very different ways. Explain each mechanism and, for each, state whether it changes
+   the model's output. — **Model answer:** Decode is memory-bandwidth-bound (background,
+   §1.5). **Quantization** serves the model's weights at lower numeric precision (e.g.
+   FP8 or INT8 instead of BF16), so each decode step streams fewer bytes through the
+   memory-bandwidth bottleneck — faster decode, less GPU memory, lower cost. It *can*
+   slightly change the output, since the computed numbers differ — though modern 8-bit
+   is near-lossless and modern 4-bit is close. **Speculative decoding** uses a small,
+   fast draft model to propose several tokens, which the large target model then
+   verifies in a single parallel pass; accepted tokens cost one target pass instead of
+   many. It does *not* change the output: the target model has the final say on every
+   token, so the emitted sequence is exactly what it would have produced alone — only
+   speed changes, and the gain depends on the draft model's acceptance rate.
 
 ### Long Answer
 
-1. A junior engineer hands you a "transformer" they built that produces the *same*
-   output regardless of the order of the input tokens, and whose deep version will not
-   train past a few layers. Walk the data flow from token IDs to a next-token
-   distribution, and at each stage identify which missing or broken component explains
-   one of those two symptoms. — **Model answer / rubric:** Data flow: token IDs →
-   embedding-matrix lookup → embedding vectors; **positional information must be injected
-   here (or in attention via RoPE)** — its absence is exactly why order does not matter,
-   since attention is otherwise order-agnostic. Then N stacked blocks, each with
-   self-attention (cross-position mixing via Q/K/V, multi-head, causally masked) and a
-   position-wise FFN; **each sub-layer needs a residual connection** — its absence is why
-   the deep version will not train, since gradients/information cannot flow cleanly
-   through the stack. Normalization also supports stable training: modern models use
-   **RMSNorm** in **pre-norm** placement (norm on the sub-layer input), which keeps the
-   residual path a clean highway — *post-norm* placement is itself a second plausible
-   cause of a deep stack failing to train, and a strong answer names it. Finally, final
-   vector → unembedding/LM head → one logit per vocabulary token → softmax →
-   distribution. Strong answers correctly map symptom 1 → missing positional encoding and
-   symptom 2 → missing residual connections (or post-norm placement), and note attention
-   is the only cross-position step while the FFN holds most parameters/knowledge.
-2. Explain the prefill/decode distinction and use it to account for at least three
-   observed latency or cost behaviors. — **Model answer / rubric:** Prefill = one
-   parallel forward pass over the prompt, compute-bound, sets TTFT, builds the KV cache.
-   Decode = sequential per-token generation, memory-bandwidth-bound, sets TPOT/throughput.
-   Behaviors: output priced higher than input (sequential memory-bound steps vs. one
-   parallel pass); long prompt inflates TTFT while long answer inflates total time
-   (separate levers); prompt caching reuses prefill KV state for a TTFT win; continuous
-   batching exploits decode being memory-bound to amortize the weight load.
-3. Explain why an LLM "remembering" a fact you told it in a previous, separate
+1. Explain why an LLM "remembering" a fact you told it in a previous, separate
    conversation is impossible without application-layer engineering. — **Model answer /
    rubric:** Inference never updates weights (frozen after training), and the API is
    stateless (no server-side memory between calls). Within one conversation, prior turns
@@ -1755,13 +1493,6 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    recall requires the application to store the fact and re-inject it (a "memory"
    feature) or retrieve it (RAG) — that is engineering around the model, not the model
    learning.
-4. Explain why self-attention's O(n²) complexity is the root cause of several practical
-   constraints in LLM systems. — **Model answer / rubric:** Each token's query is
-   compared to every token's key → n² compute and an n×n memory footprint. Consequences:
-   long context is expensive (cost rises super-linearly with context); there is a hard
-   context-window limit; "lost in the middle"/context-rot degradation; the motivation
-   for KV caching, FlashAttention, sparse/sliding-window attention; and per-token API
-   pricing. Strong answers tie the math directly to each downstream concern.
 
 ### Applied Scenario
 
@@ -1774,14 +1505,7 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    request's context window. A single user's chat cannot change the model. Recommend
    verifying where the policy text now lives (system prompt? RAG index?) and version-
    controlling it.
-2. A latency dashboard shows TTFT spiked from 0.4 s to 2.5 s but tokens-per-second is
-   unchanged. What changed, and where would you look? — **Model answer / rubric:** TTFT
-   is dominated by prefill, which scales with prompt length; unchanged tokens/sec means
-   decode is fine. So the *input* grew — a longer system prompt, more conversation
-   history, larger retrieved documents, or bigger tool definitions. Investigate input
-   token counts per request; consider trimming history, summarization, or prompt caching
-   to cut prefill work.
-3. A product team finds the model reliably answers questions about famous public
+2. A product team finds the model reliably answers questions about famous public
    companies but is wrong or vague about *their own* small startup, and is wrong about
    employee head-count figures they consider "simple." They want to fix this by "using a
    bigger, smarter model." Evaluate that plan and propose what would actually work, for
@@ -1796,14 +1520,14 @@ pass. Free-form answers are graded on reasoning quality with partial credit.
    model to "know" it. The unifying point: next-token prediction is only as reliable as
    training-data support, so the remedy is supplying the right information at inference
    time, not enlarging the model.
-4. Per-turn cost in a long-running agent conversation keeps climbing even though each
+3. Per-turn cost in a long-running agent conversation keeps climbing even though each
    new user message is short. Why, and what would you do? — **Model answer / rubric:**
    The API is stateless, so every turn resends the entire growing history as input
    tokens — the bill scales with accumulated context, not the new message. Mitigations:
    summarize or compact old turns, evict stale content, use retrieval-on-demand instead
    of keeping everything inline (Topic 4.7), and apply prompt caching to the stable
    prefix (Topic 6).
-5. A vendor claims their API is "stateful — no need to resend history." What questions
+4. A vendor claims their API is "stateful — no need to resend history." What questions
    would you ask? — **Model answer / rubric:** The underlying model is still stateless;
    "stateful" must mean the vendor stores history server-side and re-injects it into the
    context window on each call. Ask: where is history stored and is it secure; is it

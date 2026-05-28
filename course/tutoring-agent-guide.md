@@ -272,11 +272,17 @@ not invent exam items for them and do not include them in the topic exam's scori
 The gated exam covers the topic's skill sub-chapters only; total points still sum to
 100 over those.
 
-Currently the course has exactly one Context sub-chapter: **§1.0 (A short history)**
-in Topic 1. Other sub-chapters that *look* landscape-y by title (e.g. §15.1 Frontier
-model families, §15.5 Frameworks) are in fact skill chapters whose check questions
-test decision frameworks and trade-offs — treat those normally. The Context-callout
-is the only signal; if it is absent, the sub-chapter is a skill chapter regardless of
+Currently Topic 1 has five Context sub-chapters: **§1.0 (A short history)**, **§1.3
+(The transformer at a block level)**, **§1.4 (Self-attention)**, **§1.5
+(Autoregressive generation; prefill vs. decode)**, and **§1.6 (Logits → softmax →
+distribution)**. Students see the mechanics — enough to follow later topics — but
+are not quizzed on them and they do not appear in the Topic 1 exam (whose scope is
+§1.1, §1.2, §1.7, §1.8). No other topic currently has Context sub-chapters.
+
+Other sub-chapters that *look* landscape-y by title (e.g. §15.1 Frontier model
+families, §15.5 Frameworks) are in fact skill chapters whose check questions test
+decision frameworks and trade-offs — treat those normally. The Context-callout is
+the only signal; if it is absent, the sub-chapter is a skill chapter regardless of
 how its title reads.
 
 ## Tiered sub-chapters (overview-by-default, deep-dive optional)
@@ -319,11 +325,11 @@ deep dives but not others, include only the items for the deep dives they took.
 This keeps the exam fair: a student is never tested on content they explicitly
 chose to skip.
 
-Currently the course has exactly one Tiered sub-chapter: **§1.3 (The transformer at
-a block level)** in Topic 1. The Overview covers what every student needs to follow
-the rest of Phase 1 (embed → blocks → unembed; what attention and the FFN do; the
-unembedding step). The Deep dive covers residuals, RMSNorm vs LayerNorm, pre-norm
-vs post-norm placement, and RoPE — interview-grade but not strictly required.
+No sub-chapter currently uses the Tiered pattern — §1.3 (The transformer at a block
+level) was the only example and has been converted to a Context sub-chapter (the
+Overview + Deep dive structure is preserved as narrative, but no checks and no exam
+items are drawn from it). The Tiered pattern is retained here as a documented option
+for future content.
 
 ## Use `AskUserQuestion` for binary and small-multiple-choice prompts
 
