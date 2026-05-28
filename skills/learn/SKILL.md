@@ -28,24 +28,39 @@ exist yet.
    bootstrapping in full.
 5. Read `~/applied-ai-course/LEARNER-PROFILE.md` — the model of this student.
 
-## Step 2 — Show where they are
+## Step 2 — Show where they are, then ask how to begin
 
-In one or two lines, tell the student their current position from `PROGRESS.md` — e.g.
-"You're currently on Topic 9 — Evaluations. Topic 7 is passed (95/100)."
+In one or two lines, tell the student where they stand. For a returning student, use
+their `PROGRESS.md` "Current position" — e.g. *"You're currently on Topic 9 —
+Evaluations. Topic 7 is passed (95/100)."* For a **brand-new student** (freshly
+created `PROGRESS.md`, nothing passed), just say the course is ready.
 
-A **brand-new student** (freshly created `PROGRESS.md`, nothing passed) has no prior
-position — just say the course is ready and go straight to Step 3 to pick a starting
-point.
+Then ask how they want to begin — **using `AskUserQuestion`**, never a free-text
+prompt. Two options always fits cleanly in `AskUserQuestion`'s 4-option cap and is
+the correct UX for a binary entry choice. Branch on whether they have prior progress:
 
-If a returning student just wants to pick up where they left off, they can say so
-(e.g. "resume" / "continue"): skip the menus and start teaching from the "Current
-position" sub-chapter. Otherwise continue to Step 3.
+**Brand-new student** — call `AskUserQuestion` with these two options:
+1. **"Start from the beginning"** — *"Topic 1 — LLM Fundamentals, beginning with the
+   §1.0 history context."* Set the current position to Topic 1 §1.0 in `PROGRESS.md`
+   and **skip straight to Step 5** (teaching). Do not run Steps 3 or 4.
+2. **"Pick a specific topic to start from"** — Continue to Step 3 (phase pick) → Step
+   4 (topic pick).
+
+**Returning student** — call `AskUserQuestion` with these two options:
+1. **"Resume where I left off"** — describe the position concretely in the option's
+   description, e.g. *"Topic 9 §9.3 (TEACHING)"*. Skip to Step 5 and start teaching
+   from that sub-chapter.
+2. **"Pick a different topic"** — Continue to Step 3.
+
+Only when `AskUserQuestion` is unavailable (e.g. a tutor subagent without that tool)
+do you fall back to asking the question as plain text with a numbered list.
 
 ## Step 3 — Pick a phase
 
-Present the five phases as a **numbered list** and ask the student to reply with a
-number. Use a numbered list, not the multiple-choice chip tool — there are five phases
-and that tool caps at four options.
+There are **five phases**, which exceeds `AskUserQuestion`'s 4-option cap, so present
+them as a **numbered list** in chat and ask the student to reply with a number. Do
+not try to split the five across two chip questions — a single numbered list is
+clearer for the student than a forced two-step dance.
 
 ```
 1. Phase 1 — Core LLM Mechanics (Topics 1–4)
@@ -59,16 +74,25 @@ Wait for the student's choice before continuing.
 
 ## Step 4 — Pick a starting topic
 
-Present the chosen phase's topics as a **numbered list**, each annotated with its
-status from `PROGRESS.md` (`NOT STARTED` / `TEACHING` / `QUIZZING` / `EXAM READY` /
-`EXAM PASSED`, with the score if passed). Ask which topic to start from, and wait for
-the choice. Example:
+The number of topics in the chosen phase decides the tool:
 
-```
-1. Topic 9  — Evaluations          (TEACHING — current position: 9.1)
-2. Topic 10 — RAG                  (NOT STARTED)
-3. Topic 11 — Structured Outputs   (NOT STARTED)
-```
+- **Phases 1–4 (≤ 4 topics each):** call `AskUserQuestion`, one option per topic.
+  Label each option `Topic <n> — <name>` and put the status from `PROGRESS.md`
+  (`NOT STARTED` / `TEACHING` / `QUIZZING` / `EXAM READY` / `EXAM PASSED`, with the
+  score if passed) in the option's description.
+
+- **Phase 5 (5 topics, exceeds the 4-option cap):** fall back to a numbered list in
+  chat, with the same per-topic status annotation. Example:
+
+  ```
+  1. Topic 12 — Production Concerns                  (NOT STARTED)
+  2. Topic 13 — Safety, Guardrails & Adversarial     (NOT STARTED)
+  3. Topic 14 — Model Training Landscape             (NOT STARTED)
+  4. Topic 15 — Model & Ecosystem Landscape          (NOT STARTED)
+  5. Topic 16 — System Design for AI                 (NOT STARTED)
+  ```
+
+Wait for the choice before continuing.
 
 ## Step 5 — Teach, continuously
 
